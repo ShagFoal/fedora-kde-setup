@@ -1,0 +1,24 @@
+MenuBar=Disabled
+
+[General]
+DoubleClickViewAction=go_up
+RememberOpenedTabs=false
+ShowFullPath=true
+ShowStatusBar=Disabled
+Version=202
+ViewPropsTimestamp=2026,10,9,18,59,33.163
+
+[IconsMode]
+IconSize=80
+PreviewSize=80
+
+[KFileDialog Settings]
+Places Icons Auto-resize=false
+Places Icons Static Size=22
+
+[MainWindow]
+MenuBar=Disabled
+
+[PreviewSettings]
+Plugins=audiothumbnail,comicbookthumbnail,cursorthumbnail,directorythumbnail,djvuthumbnail,ebookthumbnail,exrthumbnail,imagethumbnail,jpegthumbnail,kraorathumbnail,opendocumentthumbnail,svgthumbnail,windowsexethumbnail,windowsimagethumbnail,fontthumbnail,blenderthumbnail,gsthumbnail,mobithumbnail,rawthumbnail,ffmpegthumbs,gsf-office
+
