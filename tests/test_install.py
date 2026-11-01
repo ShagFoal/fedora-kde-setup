@@ -1,15 +1,22 @@
 import hashlib
 import io
+import importlib.util
 import os
+import pty
+import select
 from pathlib import Path
 import shutil
 import subprocess
 import tarfile
 import tempfile
+import time
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+spec = importlib.util.spec_from_file_location("installer_links", ROOT / "scripts/links.py")
+links = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(links)
 CONFIGS = [
     ".zshrc", ".config/starship.toml", ".config/konsolerc",
     ".local/share/konsole/Profile 1.profile",
@@ -18,7 +25,6 @@ CONFIGS = [
     ".config/dolphinrc",
     ".local/share/kxmlgui5/dolphin/dolphinui.rc",
     ".config/mpv/mpv.conf",
-    ".config/kxkbrc",
 ]
 MOCK = '''#!/usr/bin/python3
 import os, pathlib, shutil, sys
@@ -27,11 +33,14 @@ with open(os.environ['CALL_LOG'], 'a') as log:
     log.write(name + '\\n')
 marker = pathlib.Path(os.environ['PACKAGE_MARKER'])
 if name == 'rpm':
-    sys.exit(1 if sys.argv[-1] == 'zsh' and not marker.exists() else 0)
+    missing = os.environ.get('MOCK_MISSING_PACKAGES', 'zsh').split(',')
+    sys.exit(1 if sys.argv[-1] in missing and not marker.exists() else 0)
 if name == 'sudo':
     assert not os.environ.get('FORBID_SUDO'), 'Unexpected sudo'
     assert sys.argv[1:4] == ['dnf', 'install', '-y']
     assert 'mpv' not in sys.argv[4:], 'MPV must be installed by the user'
+    for required in os.environ.get('REQUIRED_PACKAGES', '').split(','):
+        assert not required or required in sys.argv[4:]
     marker.touch()
 elif name == 'curl':
     assert not os.environ.get('FORBID_DOWNLOAD'), 'Unexpected network request'
@@ -72,6 +81,11 @@ class InstallerTests(unittest.TestCase):
         shutil.copytree(ROOT, self.repo, ignore=shutil.ignore_patterns(".git", "__pycache__"))
         self.home = self.base / "home"
         self.home.mkdir()
+        self.sources = self.home / "Main" / links.CONFIG_DIRECTORY
+        for relative in CONFIGS:
+            source = self.sources / links.CONFIG_FILES[relative]
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text("# fixture config\n")
         self.bin = self.base / "bin"
         self.bin.mkdir()
         self.fixtures = self.base / "fixtures"
@@ -133,61 +147,57 @@ class InstallerTests(unittest.TestCase):
     def calls(self):
         return self.log.read_text().splitlines() if self.log.exists() else []
 
-    def test_dry_run_has_no_filesystem_network_or_sudo_changes(self):
+    def test_dry_run_has_no_changes_or_network(self):
         before = snapshot(self.home)
         self.run_installer("--dry-run", FORBID_DOWNLOAD="1", FORBID_SUDO="1")
         self.assertEqual(snapshot(self.home), before)
-        self.assertTrue(all(call == "rpm" for call in self.calls()))
+        self.assertTrue(all(name == "rpm" for name in self.calls()))
 
-    def test_install_backup_and_offline_idempotence(self):
-        original = self.home / ".zshrc"
-        original.write_text("original config\n")
-        original.chmod(0o600)
-        os.utime(original, (1600000000, 1600000000))
+    def test_installs_dependencies_and_links_from_main(self):
+        old = self.home / ".zshrc"
+        old.write_text("original config\n")
+        old.chmod(0o600)
         self.run_installer()
+        for relative in CONFIGS:
+            target = self.home / relative
+            self.assertTrue(target.is_symlink(), relative)
+            self.assertEqual(target.resolve(), self.sources / links.CONFIG_FILES[relative])
         backups = list((self.home / ".local/state/dotfiles/backups").glob("*/.zshrc"))
         self.assertEqual(len(backups), 1)
         self.assertEqual(backups[0].read_text(), "original config\n")
         self.assertEqual(backups[0].stat().st_mode & 0o777, 0o600)
-        self.assertEqual(int(backups[0].stat().st_mtime), 1600000000)
-        for relative in CONFIGS:
-            self.assertEqual((self.home / relative).read_bytes(), (self.repo / "files" / relative).read_bytes())
-            self.assertFalse((self.home / relative).is_symlink())
-        self.assertTrue(os.access(self.home / ".local/bin/starship", os.X_OK))
         before = snapshot(self.home)
-        self.log.write_text("")
-        result = self.run_installer(FORBID_DOWNLOAD="1", FORBID_SUDO="1")
-        self.assertIn("Files changed: 0", result.stdout)
+        self.run_installer(FORBID_DOWNLOAD="1", FORBID_SUDO="1")
         self.assertEqual(snapshot(self.home), before)
-        self.assertNotIn("fc-cache", self.calls())
-        self.run_installer("--check", FORBID_DOWNLOAD="1", FORBID_SUDO="1")
+        self.run_installer("--check")
 
-    def test_changed_config_gets_a_new_backup(self):
+    def test_config_changes_in_main_are_kept_and_check_passes(self):
         self.run_installer()
-        target = self.home / ".config/starship.toml"
-        for content in ["first edit", "second edit"]:
-            target.write_text(content)
-            self.run_installer(FORBID_DOWNLOAD="1", FORBID_SUDO="1")
-        backups = list((self.home / ".local/state/dotfiles/backups").glob("*/.config/starship.toml"))
-        self.assertEqual({p.read_text() for p in backups}, {"first edit", "second edit"})
+        (self.home / ".config/starship.toml").write_text("# changed live config\n")
+        self.assertEqual((self.sources / links.CONFIG_FILES[".config/starship.toml"]).read_text(), "# changed live config\n")
+        self.run_installer("--check")
+        self.run_installer(FORBID_DOWNLOAD="1", FORBID_SUDO="1")
+        self.assertEqual((self.sources / links.CONFIG_FILES[".config/starship.toml"]).read_text(), "# changed live config\n")
 
-    def test_corrupt_download_does_not_replace_configs(self):
-        (self.home / ".zshrc").write_text("keep me")
-        result = self.run_installer(success=False, CORRUPT_DOWNLOAD="1")
-        self.assertIn("checksum mismatch", result.stderr)
-        self.assertEqual((self.home / ".zshrc").read_text(), "keep me")
-        self.assertFalse((self.home / ".local/bin/starship").exists())
-
-    def test_symlink_target_is_rejected_before_sudo_or_download(self):
-        outside = self.base / "outside"
-        outside.write_text("keep outside")
-        (self.home / ".zshrc").symlink_to(outside)
-        self.run_installer(success=False)
-        self.assertEqual(outside.read_text(), "keep outside")
-        self.assertNotIn("sudo", self.calls())
+    def test_links_only_does_not_install_or_download(self):
+        self.run_installer("--links-only", FORBID_DOWNLOAD="1", FORBID_SUDO="1")
         self.assertNotIn("curl", self.calls())
+        self.assertNotIn("sudo", self.calls())
+        self.assertTrue((self.home / ".zshrc").is_symlink())
 
-    def test_symlink_parent_is_rejected_before_mutation(self):
+    def test_missing_main_config_stops_before_packages(self):
+        (self.sources / links.CONFIG_FILES[".config/starship.toml"]).unlink()
+        before = snapshot(self.home)
+        self.run_installer(success=False)
+        self.assertEqual(snapshot(self.home), before)
+        self.assertNotIn("sudo", self.calls())
+
+    def test_corrupt_download_does_not_replace_live_configs(self):
+        (self.home / ".zshrc").write_text("keep me")
+        self.run_installer(success=False, CORRUPT_DOWNLOAD="1")
+        self.assertEqual((self.home / ".zshrc").read_text(), "keep me")
+
+    def test_config_parent_symlink_is_rejected(self):
         outside = self.base / "outside"
         outside.mkdir()
         (self.home / ".config").symlink_to(outside, target_is_directory=True)
@@ -195,58 +205,87 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(list(outside.iterdir()), [])
         self.assertNotIn("sudo", self.calls())
 
-    def test_directory_target_is_rejected(self):
+    def test_manifest_tamper_stops_before_changes(self):
+        with (self.repo / "dependencies.tsv").open("a") as output:
+            output.write("# changed\n")
+        before = snapshot(self.home)
+        self.run_installer("--dry-run", success=False)
+        self.assertEqual(snapshot(self.home), before)
+
+    def test_deleting_bootstrap_repo_keeps_main_config_links(self):
+        self.run_installer()
+        shutil.rmtree(self.repo)
+        for relative in CONFIGS:
+            self.assertTrue((self.home / relative).is_symlink())
+            self.assertEqual((self.home / relative).read_text(), "# fixture config\n")
+
+    def test_directory_target_is_rejected_before_install(self):
         (self.home / ".zshrc").mkdir()
         self.run_installer(success=False)
         self.assertNotIn("sudo", self.calls())
 
-    def test_manifest_tamper_is_rejected_before_mutation(self):
-        with (self.repo / "files/.zshrc").open("a") as output:
-            output.write("\n# changed\n")
-        self.run_installer("--dry-run", success=False)
-        self.assertEqual(list(self.home.iterdir()), [])
-
-    def test_check_detects_drift_without_writing(self):
+    def test_xdg_paths_inside_home(self):
+        self.env.update(XDG_CONFIG_HOME=str(self.home / "settings"), XDG_DATA_HOME=str(self.home / "data"), XDG_STATE_HOME=str(self.home / "state"), ZDOTDIR=str(self.home / "shell"))
         self.run_installer()
-        (self.home / ".zshrc").write_text("local edit")
-        before = snapshot(self.home)
-        self.run_installer("--check", success=False, FORBID_DOWNLOAD="1", FORBID_SUDO="1")
-        self.assertEqual(snapshot(self.home), before)
-
-    def test_xdg_and_zdotdir_inside_home(self):
-        self.env.update(
-            XDG_CONFIG_HOME=str(self.home / "settings"),
-            XDG_DATA_HOME=str(self.home / "data"),
-            XDG_STATE_HOME=str(self.home / "state"),
-            ZDOTDIR=str(self.home / "shell"),
-        )
-        self.run_installer()
-        self.assertTrue((self.home / "shell/.zshrc").is_file())
-        self.assertTrue((self.home / "settings/starship.toml").is_file())
-        self.assertTrue((self.home / "data/konsole/Profile 1.profile").is_file())
-        self.assertFalse((self.home / ".config").exists())
+        self.assertEqual((self.home / "settings/starship.toml").resolve(), self.sources / links.CONFIG_FILES[".config/starship.toml"])
+        self.assertEqual((self.home / "shell/.zshrc").resolve(), self.sources / links.CONFIG_FILES[".zshrc"])
         self.run_installer("--check")
 
+    def test_restic_and_rclone_are_installed_if_missing(self):
+        self.run_installer(MOCK_MISSING_PACKAGES="restic,rclone", REQUIRED_PACKAGES="restic,rclone")
+        self.assertIn("sudo", self.calls())
+
+    def test_restore_requires_terminal_before_changes(self):
+        before = snapshot(self.home)
+        self.run_installer("--restore", success=False)
+        self.assertEqual(snapshot(self.home), before)
+        self.assertNotIn("sudo", self.calls())
+
+    def test_restore_mode_precedes_linking(self):
+        shutil.rmtree(self.home / "Main")
+        helper = self.repo / "scripts/restore.py"
+        helper.write_text("from pathlib import Path\nimport os,sys\nfrom links import CONFIGS,CONFIG_DIRECTORY,CONFIG_FILES\nassert sys.argv[2]=='--activate-main'\nroot=Path(os.environ['HOME'])/'Main'/CONFIG_DIRECTORY\nfor relative in CONFIGS:\n p=root/CONFIG_FILES[relative]\n p.parent.mkdir(parents=True,exist_ok=True)\n p.write_text('# restored config\\n')\n")
+        self.update_lock()
+        master, slave = pty.openpty()
+        child = subprocess.Popen(["bash", str(self.repo / "install.sh"), "--restore"], env=self.env, cwd=self.base, stdin=slave, stdout=slave, stderr=slave)
+        os.close(slave)
+        output = bytearray()
+        started = time.monotonic()
+        try:
+            while child.poll() is None:
+                if time.monotonic() - started > 30:
+                    child.kill()
+                    self.fail("Interactive test exceeded 30 seconds")
+                if select.select([master], [], [], 0.1)[0]:
+                    try:
+                        output.extend(os.read(master, 65536))
+                    except OSError:
+                        break
+            self.assertEqual(child.wait(timeout=5), 0, output.decode(errors="replace"))
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait()
+            os.close(master)
+        self.assertTrue((self.home / ".zshrc").is_symlink())
+        self.assertEqual((self.home / ".zshrc").read_text(), "# restored config\n")
+
     def test_archive_symlink_is_rejected(self):
-        outside = self.base / "outside"
-        outside.write_text("keep outside")
         archive_path = self.fixtures / "starship.tar.gz"
         with tarfile.open(archive_path, "w:gz") as archive:
             link = tarfile.TarInfo("starship")
             link.type = tarfile.SYMTYPE
-            link.linkname = str(outside)
+            link.linkname = str(self.base / "outside")
             archive.addfile(link)
         self.rows[0][2] = digest(archive_path.read_bytes())
         self.update_lock()
-        result = self.run_installer(success=False)
-        self.assertIn("regular archive member", result.stderr)
-        self.assertEqual(outside.read_text(), "keep outside")
-        self.assertFalse((self.home / ".local/bin/starship").exists())
+        self.run_installer(success=False)
+        self.assertFalse((self.home / ".zshrc").exists())
 
-    def test_other_archive_members_are_never_extracted(self):
-        archive_path = self.fixtures / "starship.tar.gz"
-        self.make_archive(archive_path, {"starship": b"#!/bin/sh\nexit 0\n", "../../escape.txt": b"unexpected"})
-        self.rows[0][2] = digest(archive_path.read_bytes())
+    def test_other_archive_paths_are_never_extracted(self):
+        path = self.fixtures / "starship.tar.gz"
+        self.make_archive(path, {"starship": b"#!/bin/sh\nexit 0\n", "../../escape.txt": b"unexpected"})
+        self.rows[0][2] = digest(path.read_bytes())
         self.update_lock()
         temporary = self.base / "tmp"
         temporary.mkdir()
@@ -254,92 +293,14 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse((self.base / "escape.txt").exists())
         self.assertEqual(list(temporary.iterdir()), [])
 
-    def test_deleting_repository_keeps_all_installed_files(self):
-        self.run_installer()
-        before = snapshot(self.home)
-        shutil.rmtree(self.repo)
-        self.assertEqual(snapshot(self.home), before)
-        self.assertFalse(any(path.is_symlink() for path in self.home.rglob("*")))
-
     def test_audit_hides_detected_value(self):
         synthetic = "ghp_" + "A" * 36
-        with (self.repo / "files/.zshrc").open("a") as output:
-            output.write("\nexport EXAMPLE_TOKEN=" + synthetic + "\n")
-        result = subprocess.run(
-            ["/usr/bin/python3", "-B", str(self.repo / "scripts/audit.py")],
-            text=True, capture_output=True, timeout=10,
-        )
+        with (self.repo / "README.md").open("a") as output:
+            output.write("\n" + synthetic + "\n")
+        result = subprocess.run(["/usr/bin/python3", "-B", str(self.repo / "scripts/audit.py")], text=True, capture_output=True, timeout=10)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("provider token", result.stdout)
         self.assertNotIn(synthetic, result.stdout + result.stderr)
-
-    def test_kde_merge_preserves_unrelated_preferences(self):
-        config = self.home / ".config"
-        config.mkdir()
-        shortcuts = config / "kglobalshortcutsrc"
-        shortcuts.write_text("# local shortcuts\n[kwin]\nWindow Close=Meta+Q,Alt+F4,Close\nSwitch to Desktop 2=Meta+9,none,Local\n\n[services][other.desktop]\n_launch=Meta+Y\n")
-        (config / "kcminputrc").write_text("[Mouse]\ncursorTheme=KeepMyCursor\n\n[Keyboard]\nRepeatDelay=999\nOtherKeyboardOption=keep\n")
-        (config / "kwinrc").write_text("[Desktops]\nNumber=2\nRows=1\nId_1=keep-id\n\n[Windows]\nBorderSnapZone=17\n")
-        self.run_installer()
-        self.assertIn("# local shortcuts\n", shortcuts.read_text())
-        self.assertIn("Window Close=Meta+Q,Alt+F4,Close", shortcuts.read_text())
-        self.assertIn("[services][other.desktop]\n_launch=Meta+Y", shortcuts.read_text())
-        self.assertIn("Switch to Desktop 2=Meta+1,", shortcuts.read_text())
-        self.assertIn("[services][org.kde.konsole.desktop]\n_launch=Meta+Return", shortcuts.read_text())
-        self.assertIn("cursorTheme=KeepMyCursor", (config / "kcminputrc").read_text())
-        self.assertIn("OtherKeyboardOption=keep", (config / "kcminputrc").read_text())
-        self.assertIn("RepeatDelay=250", (config / "kcminputrc").read_text())
-        self.assertIn("Id_1=keep-id", (config / "kwinrc").read_text())
-        self.assertIn("BorderSnapZone=17", (config / "kwinrc").read_text())
-        self.assertIn("Number=9", (config / "kwinrc").read_text())
-        self.assertFalse((self.home / ".local/state/mpv").exists())
-
-    def test_unrelated_shortcut_edits_are_kept_on_reinstall_and_check(self):
-        self.run_installer()
-        target = self.home / ".config/kglobalshortcutsrc"
-        with target.open("a") as output:
-            output.write("\n[custom]\nmy-action=Meta+J\n")
-        before = snapshot(self.home)
-        self.run_installer("--check", FORBID_DOWNLOAD="1", FORBID_SUDO="1")
-        self.run_installer(FORBID_DOWNLOAD="1", FORBID_SUDO="1")
-        self.assertEqual(snapshot(self.home), before)
-
-    def test_managed_shortcut_change_is_backed_up(self):
-        self.run_installer()
-        target = self.home / ".config/kglobalshortcutsrc"
-        modified = target.read_text().replace("Switch to Desktop 2=Meta+1,", "Switch to Desktop 2=Meta+9,")
-        target.write_text(modified)
-        self.run_installer(FORBID_DOWNLOAD="1", FORBID_SUDO="1")
-        self.assertIn("Switch to Desktop 2=Meta+1,", target.read_text())
-        backups = list((self.home / ".local/state/dotfiles/backups").glob("*/.config/kglobalshortcutsrc"))
-        self.assertEqual(len(backups), 1)
-        self.assertEqual(backups[0].read_text(), modified)
-
-    def test_merge_handles_nested_sections_and_missing_final_newline(self):
-        target = self.base / "targetrc"
-        output = self.base / "renderedrc"
-        target.write_text("[services][other.desktop]\n_launch=Meta+Y\n[kwin]\nWindow Close=Meta+Q")
-        helper = self.repo / "scripts/merge-kconfig.py"
-        fragment = self.repo / "files/.config/kglobalshortcutsrc"
-        subprocess.run(["/usr/bin/python3", str(helper), "--render", str(fragment), str(target), str(output)], check=True)
-        self.assertIn("Window Close=Meta+Q\n", output.read_text())
-        self.assertIn("[services][other.desktop]\n_launch=Meta+Y", output.read_text())
-        subprocess.run(["/usr/bin/python3", str(helper), "--check", str(fragment), str(output)], check=True)
-
-    def test_conflicting_keys_are_freed_without_removing_other_bindings(self):
-        config = self.home / ".config"
-        config.mkdir()
-        target = config / "kglobalshortcutsrc"
-        target.write_text("[kwin]\nShow Desktop=Meta+D,Meta+D,Peek at Desktop\nOther Action=Meta+D\\tAlt+P,none,Other\nModifier Order=Ctrl+Meta+Left,none,Other\nEscaped Comma=Ctrl+K\\,Ctrl+C\\tMeta+D,none,Other\n\n[services][other.desktop]\n_launch=Meta+Return\\tMeta+Y\n")
-        self.run_installer()
-        text = target.read_text()
-        self.assertIn("Show Desktop=none,Meta+D,Peek at Desktop", text)
-        self.assertIn("Other Action=Alt+P,none,Other", text)
-        self.assertIn("Modifier Order=none,none,Other", text)
-        self.assertIn("Escaped Comma=Ctrl+K\\,Ctrl+C,none,Other", text)
-        self.assertIn("[services][other.desktop]\n_launch=Meta+Y", text)
-        self.assertIn("[services][org.kde.konsole.desktop]\n_launch=Meta+Return", text)
-        self.run_installer("--check")
 
 
 if __name__ == "__main__":

@@ -1,8 +1,0 @@
-[Layout]
-DisplayNames=,
-LayoutList=us,ru
-Options=grp:caps_toggle
-ResetOldOptions=true
-SwitchMode=WinClass
-Use=true
-VariantList=,

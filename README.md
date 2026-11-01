@@ -1,191 +1,224 @@
-# Dotfiles для Fedora 45 KDE
+# Fedora KDE Setup
 
-Локальный репозиторий для восстановления терминала, настроек Dolphin и MPV,
-клавиатуры и выбранных сочетаний KDE. Поддержаны x86_64 и aarch64.
-Настройки **копируются обычными файлами**. После успешной установки и проверки папку
-репозитория можно удалить: приложения, плагины и шрифты останутся в системе.
+Подготовка системы и восстановление настроек Zsh, Starship, Konsole, Dolphin,
+Fastfetch и MPV. Конфиги хранятся в `~/Main/System/Configs` и подключаются через symlink.
 
-## Состав
+**Ноутбук:** Intel Iris Xe + NVIDIA RTX 3050 Ti Mobile. **Secure Boot:** выключен.
 
-| В репозитории | Куда устанавливается по умолчанию |
-|---|---|
-| `files/.zshrc` | `~/.zshrc` |
-| `files/.config/starship.toml` | `~/.config/starship.toml` |
-| `files/.config/konsolerc` | `~/.config/konsolerc` |
-| `files/.local/share/konsole/Profile 1.profile` | `~/.local/share/konsole/Profile 1.profile` |
-| `files/.local/share/konsole/Catppuccin-Mocha.colorscheme` | `~/.local/share/konsole/Catppuccin-Mocha.colorscheme` |
-| `files/.config/fastfetch/config.jsonc` | `~/.config/fastfetch/config.jsonc` |
-| `files/.config/dolphinrc` | `~/.config/dolphinrc` |
-| `files/.local/share/kxmlgui5/dolphin/dolphinui.rc` | `~/.local/share/kxmlgui5/dolphin/dolphinui.rc` |
-| `files/.config/mpv/mpv.conf` | `~/.config/mpv/mpv.conf` |
-| `files/.config/kxkbrc` | `~/.config/kxkbrc` |
-| `files/.config/kcminputrc` — только `[Keyboard]` | выбранные ключи `~/.config/kcminputrc` |
-| `files/.config/kglobalshortcutsrc` — только переключение столов и запуск Konsole | выбранные ключи `~/.config/kglobalshortcutsrc` |
-| `files/.config/kwinrc` — только число столов и строк | выбранные ключи `~/.config/kwinrc` |
+- [Подготовка Fedora](#подготовка-fedora)
+- [Восстановление Main](#восстановление-main)
+- [Конфиги и структура Main](#конфиги-и-структура-main)
+- [Проверки и повторный запуск](#проверки-и-повторный-запуск)
+- [Настройки Plasma](#настройки-plasma)
 
-Всего **13 файлов и фрагментов настроек**: 10 копируются целиком, в трёх
-обновляются только сохранённые ключи. Остальные записи, группы и комментарии
-в `kcminputrc`, `kglobalshortcutsrc` и `kwinrc` сохраняются. Изменённый файл
-целиком сохраняется в приватный backup перед записью результата.
+## Подготовка Fedora
 
-Dolphin сохраняет общие настройки и раскладку
-интерфейса: двойной щелчок по пустому месту поднимает на уровень вверх
-(`DoubleClickViewAction=go_up`), размер значков и предпросмотра — 80,
-меню и строка состояния скрыты, полный путь отображается, панель инструментов
-и сочетания клавиш сохранены. Цветовая схема Dolphin и привязка к ней
-не сохраняются; цвета и оформление темой задаются отдельно настройками системы.
-Закладки, список Places с путями, история, открытые вкладки и настройки отдельных папок
-не копируются. Это перенос общих настроек и интерфейса Dolphin.
-
-MPV: сохранена точная копия текущего `mpv.conf`, включая полный экран,
-автоматическое создание плейлиста и параметры запоминания позиции/истории.
-Сам плеер пользователь устанавливает самостоятельно; установщик не требует
-его наличия и не устанавливает пакет `mpv`. Данные истории и `watch_later`
-не копируются. Дополнительных `input.conf` и скриптов в этот набор не добавлено.
-Нативный MPV читает этот путь согласно
-[документации MPV](https://mpv.io/manual/stable/#configuration-files).
-Если будет выбран Flatpak или задан `MPV_HOME`, его путь настроек потребуется
-учесть отдельно. Включённый `use-filedir-conf=yes` сохранён как в исходнике;
-файлы настроек рядом с видео в репозиторий не входят.
-
-Клавиатура: US/RU, переключение Caps Lock, запоминание раскладки по классу
-приложения (`SwitchMode=WinClass`), `RepeatDelay=250` и `RepeatRate=20`.
-Из `kcminputrc` взята только группа `[Keyboard]`; настройки мыши, тачпада
-и курсора не сохраняются в репозиторий и не заменяются при установке.
-
-Из KDE сохранены только действия переключения рабочих столов и запуск Konsole:
-
-| Текущие клавиши | Действие |
-|---|---|
-| Meta+A / Meta+D, также Meta+Ctrl+Left / Right | стол слева / справа |
-| Meta+Ctrl+Up / Down | стол сверху / снизу |
-| Meta+1 / Meta+2 / Meta+3 | стол №2 / №5 / №8 соответственно |
-| Meta+Enter (`Meta+Return`) | запуск Konsole |
-
-Отключённые сочетания выбранных действий тоже сохранены. Остальные действия
-KDE в репозиторий не входят и при установке сохраняют свои настройки.
-Если нужная клавиша уже занята другим действием, удаляется только это
-конфликтующее сочетание; другие клавиши того действия остаются. Например,
-стандартное Meta+D для показа рабочего стола освобождается для перехода вправо.
-Для существующих привязок к столам №2/5/8 сохранена текущая сетка: **9 столов,
-3 строки**. Из `kwinrc` взяты только `[Desktops] Number` и `Rows`, без настроек
-окон, эффектов, тем или идентификаторов старых рабочих столов.
-
-## Проверка и установка
-
-1. Открой терминал в этой папке и просмотри план без изменений:
-
-   ```bash
-   ./install.sh --dry-run
-   ```
-
-2. Закрой окна Dolphin и установи настройки от обычного пользователя,
-   **без `sudo` перед скриптом**:
-
-   ```bash
-   ./install.sh
-   ```
-
-   Потребуются интернет и пароль для `sudo dnf`, если отсутствуют RPM-пакеты.
-   Скрипт не обновляет всю систему и не добавляет сторонние RPM-репозитории.
-   Время зависит от сети и загрузки зеркал; заранее фиксированное время не обещается.
-
-3. Проверь установленные настройки и затем выйди из Plasma и войди снова:
-
-   ```bash
-   ./install.sh --check
-   ```
-
-   Новый вход нужен для загрузки клавиатуры, сетки столов и выбранных сочетаний
-   KDE. Скрипт проверяет сохранённые файлы; он не проверяет нажатия клавиш
-   и не завершает сеанс самостоятельно.
-
-   Профиль Konsole запускает `/bin/zsh`. Команду `chsh` скрипт не выполняет.
-   Fastfetch запускается отдельно командой `fastfetch`; автоматический вывод при старте
-   не добавлен, поскольку его не было в исходной `.zshrc`.
-
-Повторный запуск пропускает совпадающие файлы и уже установленные RPM-пакеты.
-Проверка трёх фрагментов сравнивает только выбранные ключи: свои изменения
-в остальных сочетаниях KDE можно сохранять без конфликтов с этим набором.
-Конфиги с локальными изменениями будут сохранены в backup и заменены версиями из
-репозитория. Плагины и бинарные файлы сверяются с зафиксированными хешами; скрипт
-восстанавливает именно эти версии, включая замену иной локальной версии с backup.
-Полностью совпадающая повторная установка не требует сети или `sudo`.
-
-## Зависимости
-
-| Компонент | Источник и размещение |
-|---|---|
-| Zsh, Konsole, Fastfetch, Dolphin, Git, curl, Python 3, fontconfig, util-linux | `dnf install` только недостающих пакетов из уже настроенных репозиториев |
-| Starship 1.27.0 | [Официальный выпуск](https://github.com/starship/starship/releases/tag/v1.27.0), `~/.local/bin/starship` |
-| zsh-patina 1.11.0 | [Официальный выпуск](https://github.com/michel-kraemer/zsh-patina/releases/tag/1.11.0), `~/.local/bin/zsh-patina` |
-| zsh-autosuggestions, commit `85919cd1ffa7d2d5412f6d3fe437ebdbeeec4fc5` | [Официальный исходный файл](https://github.com/zsh-users/zsh-autosuggestions/tree/85919cd1ffa7d2d5412f6d3fe437ebdbeeec4fc5), `~/.zsh/zsh-autosuggestions/` с LICENSE |
-| JetBrainsMono Nerd Font 3.5.1 | [Официальный выпуск Nerd Fonts](https://github.com/ryanoasis/nerd-fonts/releases/tag/v3.5.1), четыре начертания и OFL в `~/.local/share/fonts/JetBrainsMonoNerdFont/` |
-
-Список URL и SHA-256 находится в `dependencies.tsv`. Перед установкой зависимостей
-скрипт скачивает все нужные файлы во временную папку и проверяет хеши архивов и
-отдельных файлов. Из архивов читаются только точно указанные обычные файлы:
-пути и ссылки из архивов не извлекаются. Загруженные install-скрипты не выполняются.
-RPM-пакеты при этом проверяет DNF штатным способом.
-
-Поддержаны `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME` и `ZDOTDIR`, если
-это абсолютные нормализованные пути внутри домашней папки. Другой `STARSHIP_CONFIG`
-вызывает остановку с сообщением. Ссылки в путях назначения и каталоги вместо файлов
-также вызывают остановку **до установки RPM и замены настроек**.
-
-## Backup и восстановление
-
-Существующие отличающиеся файлы сохраняются перед заменой в:
-`~/.local/state/dotfiles/backups/<UTC-время>.<случайный-суффикс>/`.
-Если задан `XDG_STATE_HOME`, используется он. В backup сохраняется путь файла
-относительно домашней папки, содержимое, исходные права и время изменения.
-Папки backup приватные; они находятся вне репозитория. Если заменять нечего,
-новая папка backup не создаётся.
-
-Для возврата конкретного конфига закрой соответствующее приложение и скопируй нужный сохранённый файл
-обратно на его путь в домашней папке. Перед возвратом также сохрани текущую версию.
-Не применяй весь backup вслепую. Установка не является общей транзакцией:
-при ошибке копирования скрипт останавливается, уже сделанные копии остаются,
-а прежние версии заменённых файлов доступны в указанной папке backup.
-
-## Частичные зависимости
-
-- `bm` удалён только из копии `.zshrc`; `backup-main`, Restic, Rclone и их данные
-  отсутствуют. Репозиторий не восстанавливает систему резервного копирования.
-- `rebootw` сохранён как необязательная функция. Нужны пакет `efibootmgr`, загрузка
-  в UEFI и проверенная активная запись Windows `Boot0000`. Номер индивидуален:
-  проверь его после переустановки. Функция проверяет название и EFI-путь Windows,
-  спрашивает подтверждение и только затем задаёт BootNext и перезагружает компьютер.
-  Установщик не вызывает её и не устанавливает `efibootmgr`; при отсутствии команды
-  или UEFI функция завершается с понятным сообщением.
-- JDK по `~/.jdks/current`, .NET в `~/.dotnet` и Rust в `~/.cargo` лишь условно
-  подхватываются исходной `.zshrc`. SDK и пользовательская ссылка JDK не создаются.
-- Цвета и шрифт Konsole восстанавливаются. Для Dolphin переносятся поведение,
-  раскладка интерфейса и общие настройки. Цветовая схема Dolphin, глобальная
-  тема KDE, значки и стиль виджетов не включены. Список плагинов
-  предпросмотра в Dolphin сохранён, но сами дополнительные плагины не устанавливаются:
-  наличие настройки не гарантирует предпросмотр всех перечисленных форматов.
-  `.gitconfig`, Git identity, credentials, history,
-  `.env`, SSH/GPG-ключи и старые `.bak` не включены.
-
-## Проверка перед GitHub
+### 1. Обновление системы
 
 ```bash
-python3 -B scripts/audit.py
-python3 -B -m unittest discover -s tests -v
-git status --short
+sudo dnf upgrade --refresh -y
 ```
 
-`scripts/audit.py` проверяет точный список файлов, узнаваемые секреты и персональные
-пути без вывода найденных значений, формат конфигов, ссылки профиля Konsole,
-XML интерфейса Dolphin, действие двойного щелчка по пустому месту,
-состав выбранных настроек клавиатуры/столов/сочетаний и контрольные суммы.
-`.gitignore` разрешает только перечисленные файлы: случайные
-backup и личные настройки игнорируются. Это не заменяет просмотр будущих изменений.
-Тесты используют временный HOME и подставные команды загрузки/DNF, без сети и `sudo`.
-Они проверяют работу установщика, но не заменяют установку на чистой Fedora.
+Дождись завершения обновления без ошибок, затем перезагрузись, чтобы загрузить
+новое ядро перед установкой NVIDIA:
 
-После осознанного изменения файлов обнови `SHA256SUMS` по тому же точному списку,
-просмотри diff и повтори проверки. Без обновления контрольных сумм скрипт остановится.
-Коммиты, remote и публикация выполняются отдельно после проверки; установщик их
-не делает. Результаты первоначальной проверки находятся в `AUDIT.md`.
+```bash
+sudo reboot
+```
+
+### 2. RPM Fusion
+
+```bash
+sudo dnf install -y \
+  https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm \
+  https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm
+
+sudo dnf install -y rpmfusion-free-appstream-data rpmfusion-nonfree-appstream-data
+```
+
+### 3. Flathub
+
+```bash
+flatpak remote-add --system --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+flatpak remote-modify --system --no-filter --enable flathub
+flatpak update -y
+```
+
+### 4. Кодеки и архиваторы
+
+```bash
+sudo dnf install ffmpeg --allowerasing
+sudo dnf install -y gstreamer1-plugins-bad-freeworld gstreamer1-plugins-ugly
+sudo dnf install -y 7zip unzip zip unrar
+```
+
+`--allowerasing` разрешает DNF заменить конфликтующие пакеты FFmpeg.
+Перед подтверждением просмотри список удаляемых пакетов.
+[Справка DNF5](https://dnf5.readthedocs.io/en/latest/commands/install.8.html).
+
+### 5. Intel и NVIDIA
+
+```bash
+sudo dnf install -y intel-media-driver libva-utils
+sudo dnf install -y "kernel-devel-$(uname -r)" akmod-nvidia xorg-x11-drv-nvidia-cuda
+```
+
+После установки пакетов модуль NVIDIA может ещё собираться в фоне.
+На первую сборку заложи 5–10 минут. Запусти команду ниже и дождись её окончания;
+терминал должен снова показать приглашение ввода:
+
+```bash
+sudo akmods --force
+```
+
+Проверь версию установленного драйвера и собранного модуля для загруженного ядра:
+
+```bash
+rpm -q --qf '%{VERSION}\n' akmod-nvidia
+modinfo -k "$(uname -r)" -F version nvidia
+```
+
+Обе команды должны вывести одинаковую версию. При ошибке сборки, отсутствии
+модуля или несовпадении версий остановись до перезагрузки. Журнал сборки:
+`/var/cache/akmods/nvidia/.last.log`.
+
+После успешной проверки модуля перезагрузись:
+
+```bash
+sudo reboot
+```
+
+После перезагрузки проверь загрузку драйвера и видеоускорение:
+
+```bash
+nvidia-smi
+vainfo
+```
+
+`nvidia-smi` должен показать RTX 3050 Ti и версию драйвера, `vainfo` —
+профили аппаратного декодирования. [Установка NVIDIA](https://github.com/devangshekhawat/Fedora-45-Post-Install-Guide#nvidia-drivers).
+
+### 6. Утилиты терминала
+
+```bash
+sudo dnf install -y git curl python3 btop ripgrep fd-find fzf jq wl-clipboard
+```
+
+## Восстановление Main
+
+Используй свежий снимок Main с папкой `System`.
+
+```bash
+mkdir -p "$HOME/Downloads"
+git clone https://github.com/ShagFoal/fedora-kde-setup.git "$HOME/Downloads/fedora-kde-setup"
+cd "$HOME/Downloads/fedora-kde-setup"
+bash install.sh --restore
+```
+
+В настройке rclone создай подключение **gdrive**, тип **Google Drive**.
+Введи OAuth Client ID и Client Secret, авторизуйся в Google. Сохрани подключение
+ответом **y** и выйди из меню через **q**. Затем введи пароль Restic и выбери
+последний снимок Main.
+
+Установщик восстановит Main, установит Zsh, Konsole, Dolphin, Fastfetch,
+Starship, Patina, autosuggestions и Nerd Font, затем создаст ссылки на конфиги.
+
+Дождись итогового сообщения **`Complete.`** после проверки файлов и зависимостей.
+Загрузка Main и проверка Restic могут продолжаться долго; скрипт показывает
+прошедшее время. Следующий блок выполняй после окончания установщика.
+
+
+Проверь ссылки и добавь команду резервирования:
+
+```bash
+python3 -B "$HOME/Downloads/fedora-kde-setup/scripts/links.py" --check
+mkdir -p "$HOME/.local/bin"
+ln -s "$HOME/Main/System/Scripts/backup-main" "$HOME/.local/bin/backup-main"
+```
+
+Для постоянного доступа к резервным копиям:
+
+```bash
+rclone config
+```
+
+Имя подключения — **gdrive**, тип — **Google Drive**, аккаунт — с резервной копией Main.
+Сохрани подключение и выйди через **q**. Проверка:
+
+```bash
+rclone listremotes
+```
+
+В выводе должно быть **`gdrive:`**.
+
+Настрой клавиатуру и рабочие столы по [PLASMA_MANUAL.md](PLASMA_MANUAL.md),
+затем открой Konsole и Dolphin заново.
+
+## Конфиги и структура Main
+
+```text
+Main/System/
+├── Configs/
+│   ├── zsh/
+│   ├── starship/
+│   ├── konsole/
+│   ├── fastfetch/
+│   ├── dolphin/
+│   └── mpv/
+├── Setup/            Git-репозиторий с установщиком
+├── Scripts/          backup-main
+└── Profiles/Browser/ профиль браузера
+```
+
+| Файл в System/Configs | Ссылка в домашней папке |
+|---|---|
+| `zsh/zshrc` | `~/.zshrc` |
+| `starship/starship.toml` | `~/.config/starship.toml` |
+| `konsole/konsolerc` | `~/.config/konsolerc` |
+| `konsole/Profile 1.profile` | `~/.local/share/konsole/Profile 1.profile` |
+| `konsole/Catppuccin-Mocha.colorscheme` | `~/.local/share/konsole/Catppuccin-Mocha.colorscheme` |
+| `fastfetch/config.jsonc` | `~/.config/fastfetch/config.jsonc` |
+| `dolphin/dolphinrc` | `~/.config/dolphinrc` |
+| `dolphin/dolphinui.rc` | `~/.local/share/kxmlgui5/dolphin/dolphinui.rc` |
+| `mpv/mpv.conf` | `~/.config/mpv/mpv.conf` |
+
+Правки через системные пути меняют файлы в Main. В облачную копию они попадают
+при следующем запуске `backup-main`. Папка `System/Configs` должна оставаться
+на своём месте. Git-репозиторий находится отдельно, в `System/Setup`.
+
+Пароли Restic, OAuth-данные и профиль браузера сохраняй вне Git.
+
+## Проверки и повторный запуск
+
+В папке репозитория:
+
+```bash
+bash install.sh --dry-run
+python3 -B scripts/links.py --check
+python3 -B scripts/audit.py --configs
+bash install.sh --check
+```
+
+| Команда | Действие |
+|---|---|
+| `bash install.sh --restore` | Восстановить Main из Restic, установить зависимости и создать ссылки |
+| `bash install.sh` | Установить зависимости и создать ссылки для восстановленной Main |
+| `bash install.sh --links-only` | Повторно создать ссылки |
+| `bash install.sh --dry-run` | Показать план без изменений |
+| `bash install.sh --check` | Проверить ссылки, зависимости и синтаксис Zsh |
+
+Существующая Main при восстановлении не заменяется. Старые снимки с
+`Main/Configs/Dotfiles` поддерживаются.
+
+Замещаемые файлы сохраняются в `~/.local/state/dotfiles/backups`.
+При ошибке создания ссылок выполненные замены откатываются.
+Версии и контрольные суммы Starship, Patina, Nerd Font и autosuggestions
+закреплены в [dependencies.tsv](dependencies.tsv).
+
+## Настройки Plasma
+
+Раскладки, рабочие столы и горячие клавиши описаны в
+[PLASMA_MANUAL.md](PLASMA_MANUAL.md).
+
+Основа: [Fedora 45 Post Install Guide](https://github.com/devangshekhawat/Fedora-45-Post-Install-Guide),
+[Fedora KDE Setup](https://github.com/26zl/fedora-kde-setup).

@@ -8,8 +8,10 @@ case "${1:-}" in
   '') ;;
   --dry-run) MODE=dry-run ;;
   --check) MODE=check ;;
+  --restore) MODE=restore ;;
+  --links-only) MODE=links-only ;;
   -h|--help)
-    printf 'Usage: ./install.sh [--dry-run | --check]\n'
+    printf 'Usage: ./install.sh [--dry-run | --check | --restore | --links-only]\n'
     printf 'Run as your regular user. sudo is used only to install missing RPM packages.\n'
     exit 0 ;;
   *) printf 'Unknown option: %s\n' "$1" >&2; exit 2 ;;
@@ -28,6 +30,9 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 [[ $EUID -ne 0 ]] || die 'Run without sudo; the script requests sudo only for DNF.'
+if [[ "$MODE" = restore && ( ! -t 0 || ! -t 1 ) ]]; then
+  die '--restore requires an interactive terminal for credentials and snapshot selection.'
+fi
 [[ -n ${HOME:-} && $HOME = /* && $HOME != / ]] || die 'HOME must be an absolute user directory.'
 [[ -d "$HOME" ]] || die 'HOME does not exist.'
 [[ "$(realpath -ms -- "$HOME")" = "$HOME" ]] || die 'HOME must be a normalized absolute path.'
@@ -71,25 +76,7 @@ safe_file() {
   done
 }
 
-readonly -a CONFIGS=(
-  '.zshrc'
-  '.config/starship.toml'
-  '.config/konsolerc'
-  '.local/share/konsole/Profile 1.profile'
-  '.local/share/konsole/Catppuccin-Mocha.colorscheme'
-  '.config/fastfetch/config.jsonc'
-  '.config/dolphinrc'
-  '.local/share/kxmlgui5/dolphin/dolphinui.rc'
-  '.config/mpv/mpv.conf'
-  '.config/kxkbrc'
-)
-readonly -a MERGED_CONFIGS=(
-  '.config/kcminputrc'
-  '.config/kglobalshortcutsrc'
-  '.config/kwinrc'
-)
-readonly CONFIG_COUNT=$(( ${#CONFIGS[@]} + ${#MERGED_CONFIGS[@]} ))
-readonly -a PACKAGES=(zsh konsole fastfetch dolphin git curl python3 fontconfig util-linux)
+readonly -a PACKAGES=(zsh konsole fastfetch dolphin git curl python3 fontconfig util-linux restic rclone)
 declare -a MISSING_PACKAGES=()
 for package in "${PACKAGES[@]}"; do
   rpm -q --quiet "$package" || MISSING_PACKAGES+=("$package")
@@ -98,15 +85,18 @@ done
 [[ -f "$REPO_DIR/SHA256SUMS" && ! -L "$REPO_DIR/SHA256SUMS" ]] || die 'Missing regular SHA256SUMS.'
 (cd -- "$REPO_DIR" && sha256sum --check --status SHA256SUMS) || die 'Repository integrity check failed; review edits and regenerate SHA256SUMS.'
 [[ -f "$REPO_DIR/dependencies.tsv" && ! -L "$REPO_DIR/dependencies.tsv" ]] || die 'Missing regular dependency lock.'
-for relative in "${CONFIGS[@]}" "${MERGED_CONFIGS[@]}"; do
-  [[ -f "$REPO_DIR/files/$relative" && ! -L "$REPO_DIR/files/$relative" ]] || die "Missing regular config: $relative"
-  source_parent=$(dirname -- "$REPO_DIR/files/$relative")
-  while [[ "$source_parent" != "$REPO_DIR" ]]; do
-    [[ ! -L "$source_parent" ]] || die "Symbolic link in source path: $source_parent"
-    source_parent=$(dirname -- "$source_parent")
-  done
-  safe_file "$(resolve_target "$relative")"
-done
+if [[ "$MODE" = restore && ( -e "$HOME/Main" || -L "$HOME/Main" ) ]]; then
+  die 'Main already exists. Use the normal install to link its configs; --restore never replaces Main.'
+fi
+if command -v python3 >/dev/null; then
+  if [[ "$MODE" = restore ]]; then
+    python3 "$REPO_DIR/scripts/links.py" --destinations-only
+  else
+    python3 "$REPO_DIR/scripts/links.py" --validate
+  fi
+elif [[ "$MODE" = dry-run || "$MODE" = check || "$MODE" = links-only ]]; then
+  die 'Python 3 is required for config-link validation.'
+fi
 safe_file "$STATE_HOME/dotfiles/install.lock"
 safe_file "$STATE_HOME/dotfiles/backups/.preflight"
 while IFS=$'\t' read -r arch url archive_hash member file_hash relative mode; do
@@ -127,33 +117,20 @@ matches_hash() {
 
 warnings() {
   note 'Optional: rebootw requires efibootmgr, UEFI and a verified Windows Boot0000 entry; it is never called by this installer.'
-  note 'Excluded: bm/backup-main, Restic/Rclone backups, JDK/.NET/Rust SDKs, Git identity/credentials and other KDE settings.'
+  note 'Excluded: bm/backup-main, backup schedules, JDK/.NET/Rust SDKs, Git identity/credentials and other KDE settings.'
+  note 'Restic/rclone are installed; Main files are restored only with --restore and interactive credentials.'
   note 'The Konsole profile starts /bin/zsh; your account login shell is not changed.'
   note 'Dolphin: behavior and interface settings are included; color schemes and themes are not copied.'
   note 'Close Dolphin before installing its settings.'
   note 'MPV: only mpv.conf is restored; install the player yourself.'
-  note 'Keyboard, selected KDE shortcuts and the desktop grid take effect after logging out of Plasma and back in.'
+  note 'Plasma keyboard/shortcuts/desktops are configured manually; see PLASMA_MANUAL.md.'
+  note 'Live configs stay in Main; keep their source folder and back it up with Main.'
 }
 
 if [[ "$MODE" = dry-run ]]; then
   note 'DRY RUN: no downloads, sudo, copies, backups or settings changes.'
   note "Target: Fedora 45 / $ARCH; missing RPM packages: ${MISSING_PACKAGES[*]:-none}"
-  for relative in "${CONFIGS[@]}"; do
-    target=$(resolve_target "$relative")
-    if cmp -s -- "$REPO_DIR/files/$relative" "$target"; then
-      note "Unchanged: $target"
-    else
-      note "Copy (backup if present): $target"
-    fi
-  done
-  for relative in "${MERGED_CONFIGS[@]}"; do
-    target=$(resolve_target "$relative")
-    if command -v python3 >/dev/null && python3 "$REPO_DIR/scripts/merge-kconfig.py" --check "$REPO_DIR/files/$relative" "$target"; then
-      note "Selected entries unchanged: $target"
-    else
-      note "Merge selected entries (backup if changed): $target"
-    fi
-  done
+  python3 "$REPO_DIR/scripts/links.py" --dry-run
   while IFS=$'\t' read -r arch url archive_hash member file_hash relative mode; do
     [[ -n "$arch" && "$arch" != \#* ]] || continue
     [[ "$arch" = all || "$arch" = "$ARCH" ]] || continue
@@ -174,17 +151,7 @@ check_installation() {
     note "Missing RPM packages: ${MISSING_PACKAGES[*]}"
     failed=1
   fi
-  for relative in "${CONFIGS[@]}"; do
-    target=$(resolve_target "$relative")
-    cmp -s -- "$REPO_DIR/files/$relative" "$target" || { note "Config differs or is missing: $target"; failed=1; }
-  done
-  for relative in "${MERGED_CONFIGS[@]}"; do
-    target=$(resolve_target "$relative")
-    if ! command -v python3 >/dev/null || ! python3 "$REPO_DIR/scripts/merge-kconfig.py" --check "$REPO_DIR/files/$relative" "$target"; then
-      note "Selected config entries differ or are missing: $target"
-      failed=1
-    fi
-  done
+  python3 "$REPO_DIR/scripts/links.py" --check || failed=1
   while IFS=$'\t' read -r arch url archive_hash member file_hash relative mode; do
     [[ -n "$arch" && "$arch" != \#* ]] || continue
     [[ "$arch" = all || "$arch" = "$ARCH" ]] || continue
@@ -195,17 +162,22 @@ check_installation() {
     fi
   done < "$REPO_DIR/dependencies.tsv"
   if command -v zsh >/dev/null; then
-    zsh -dfn "$REPO_DIR/files/.zshrc" || failed=1
+    zsh -dfn "$(python3 "$REPO_DIR/scripts/links.py" --zsh-config)" || failed=1
   else
     failed=1
   fi
   (( failed == 0 )) || return 1
-  note "CHECK PASSED: $CONFIG_COUNT config files/fragments, pinned dependencies and Zsh syntax."
+  note "CHECK PASSED: 9 Main config links, pinned dependencies and Zsh syntax."
 }
 
 if [[ "$MODE" = check ]]; then
   check_installation
   warnings
+  exit 0
+fi
+
+if [[ "$MODE" = links-only ]]; then
+  python3 "$REPO_DIR/scripts/links.py" --apply
   exit 0
 fi
 
@@ -222,7 +194,11 @@ MISSING_PACKAGES=()
 for package in "${PACKAGES[@]}"; do
   rpm -q --quiet "$package" || die "Package was not installed: $package"
 done
-zsh -dfn "$REPO_DIR/files/.zshrc"
+if [[ "$MODE" = restore ]]; then
+  python3 "$REPO_DIR/scripts/restore.py" "$REPO_DIR/restore.json" --activate-main
+fi
+python3 "$REPO_DIR/scripts/links.py" --validate
+zsh -dfn "$(python3 "$REPO_DIR/scripts/links.py" --zsh-config)"
 
 write_copy() {
   local source=$1 target=$2 mode=$3 temporary backup
@@ -283,7 +259,7 @@ PY
   matches_hash "$prepared" "$file_hash" || die 'Extracted dependency checksum mismatch.'
 done < "$REPO_DIR/dependencies.tsv"
 
-note "[3/4] Copying dependencies and applying $CONFIG_COUNT config files/fragments; changed files get backups."
+note '[3/4] Copying dependencies and linking Main configs; changed files get backups.'
 while IFS=$'\t' read -r arch url archive_hash member file_hash relative mode; do
   [[ -n "$arch" && "$arch" != \#* ]] || continue
   [[ "$arch" = all || "$arch" = "$ARCH" ]] || continue
@@ -293,14 +269,7 @@ while IFS=$'\t' read -r arch url archive_hash member file_hash relative mode; do
   fi
   write_copy "$TEMP_DIR/$file_hash.file" "$target" "$mode"
 done < "$REPO_DIR/dependencies.tsv"
-for relative in "${CONFIGS[@]}"; do
-  write_copy "$REPO_DIR/files/$relative" "$(resolve_target "$relative")" 644
-done
-for relative in "${MERGED_CONFIGS[@]}"; do
-  target=$(resolve_target "$relative")
-  python3 "$REPO_DIR/scripts/merge-kconfig.py" --render "$REPO_DIR/files/$relative" "$target" "$TEMP_DIR/merged-config"
-  write_copy "$TEMP_DIR/merged-config" "$target" 644
-done
+python3 "$REPO_DIR/scripts/links.py" --apply
 if (( CHANGED > 0 )); then
   fc-cache "$DATA_HOME/fonts/JetBrainsMonoNerdFont"
 fi
@@ -308,4 +277,4 @@ note '[4/4] Checking the result.'
 check_installation
 note "Complete. Files changed: $CHANGED. Backups: ${BACKUP_DIR:-none needed}."
 warnings
-note 'Close and reopen Konsole and Dolphin after the installer exits. The repository can then be deleted.'
+note 'Close and reopen Konsole and Dolphin after the installer exits. Keep the configs in Main; the temporary bootstrap checkout may be deleted.'

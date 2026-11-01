@@ -1,0 +1,6 @@
+{
+  "remote": "gdrive",
+  "repository_path": "backups/main-restic",
+  "tag": "main-only",
+  "source_directory": "Main"
+}

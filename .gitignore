@@ -1,35 +1,17 @@
-# Deny by default; only reviewed files can be staged normally.
+# Only reviewed bootstrap files belong in Git. Live configs are in Main.
 *
+!/scripts/
+!/tests/
 !/.gitignore
 !/README.md
-!/AUDIT.md
+!/PLASMA_MANUAL.md
 !/install.sh
 !/dependencies.tsv
 !/SHA256SUMS
-!/scripts/
+!/restore.json
 !/scripts/audit.py
-!/scripts/merge-kconfig.py
-!/tests/
+!/scripts/links.py
+!/scripts/restore.py
 !/tests/test_install.py
-!/files/
-!/files/.zshrc
-!/files/.config/
-!/files/.config/starship.toml
-!/files/.config/konsolerc
-!/files/.config/dolphinrc
-!/files/.config/kxkbrc
-!/files/.config/kcminputrc
-!/files/.config/kglobalshortcutsrc
-!/files/.config/kwinrc
-!/files/.config/mpv/
-!/files/.config/mpv/mpv.conf
-!/files/.config/fastfetch/
-!/files/.config/fastfetch/config.jsonc
-!/files/.local/
-!/files/.local/share/
-!/files/.local/share/konsole/
-!/files/.local/share/konsole/Profile 1.profile
-!/files/.local/share/konsole/Catppuccin-Mocha.colorscheme
-!/files/.local/share/kxmlgui5/
-!/files/.local/share/kxmlgui5/dolphin/
-!/files/.local/share/kxmlgui5/dolphin/dolphinui.rc
+!/tests/test_restore.py
+!/tests/test_links.py
