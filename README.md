@@ -98,15 +98,22 @@ vainfo
 `nvidia-smi` должен показать RTX 3050 Ti и версию драйвера, `vainfo` —
 профили аппаратного декодирования. [Установка NVIDIA](https://github.com/devangshekhawat/Fedora-45-Post-Install-Guide#nvidia-drivers).
 
-### 6. Утилиты терминала
+### 6. Инструменты
 
 ```bash
-sudo dnf install -y git curl python3 btop ripgrep fd-find fzf jq wl-clipboard
+sudo dnf install -y git gh curl python3
 ```
 
 ## Восстановление Main
 
 Используй свежий снимок Main с папкой `System`.
+
+Войди в GitHub для доступа к закрытому репозиторию:
+
+```bash
+gh auth login --hostname github.com --git-protocol https --web
+gh auth setup-git --hostname github.com
+```
 
 ```bash
 mkdir -p "$HOME/Downloads"
