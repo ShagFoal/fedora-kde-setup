@@ -117,7 +117,8 @@ def restore_files(profile_path):
     destination = None
     print("[1/4] Временная настройка доступа rclone.")
     print(f"Создай подключение {profile['remote']} для Google Drive (тип drive).")
-    print("Введи OAuth client ID/secret и авторизуйся в браузере; затем заверши rclone config через q.")
+    print("Введи свои OAuth client ID/secret, выбери scope drive.readonly и авторизуйся в браузере.")
+    print("Сохрани подключение ответом y; затем заверши rclone config через q.")
     print("Текущие rclone.conf и переменные RESTIC_/RCLONE_ не используются.")
     try:
         with tempfile.TemporaryDirectory(prefix="dotfiles-restore-") as temporary:

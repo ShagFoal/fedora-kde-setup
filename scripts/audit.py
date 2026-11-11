@@ -17,6 +17,9 @@ ALLOWED = {
 RULES = {
     "private key": r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----",
     "provider token": r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{20,}|AKIA[0-9A-Z]{16})\b",
+    "Google OAuth secret": r"\bGOCSPX-[A-Za-z0-9_-]{20,}\b",
+    "Google OAuth client ID": r"\b[0-9]{6,}-[a-z0-9_-]{10,}\.apps\.googleusercontent\.com\b",
+    "Google access token": r"\bya29\.[A-Za-z0-9_-]{20,}\b",
     "JWT": r"\beyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\b",
     "credential URL": r"://[^\s/:@]+:[^\s/@]+@",
     "credential assignment": r"(?i)^\s*(?:export\s+)?[\w]*(?:password|passwd|secret|token|api_key)[\w]*\s*[=:]\s*['\"]?[^'\"\s$]{8,}",

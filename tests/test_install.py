@@ -7,6 +7,7 @@ import select
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -70,6 +71,30 @@ def snapshot(directory):
         elif path.is_dir():
             result[str(path.relative_to(directory))] = ("directory",)
     return result
+
+
+class AuditTests(unittest.TestCase):
+    def test_google_oauth_values_are_rejected_without_disclosure_or_writes(self):
+        samples = [
+            "GOC" + "SPX-" + "a" * 28,
+            "123456789-" + "b" * 24 + ".apps.googleusercontent.com",
+            "ya" + "29." + "c" * 40,
+        ]
+        with tempfile.TemporaryDirectory(prefix="audit-test-") as temporary:
+            repo = Path(temporary) / "repo"
+            shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            original = (repo / "README.md").read_text()
+            for value in samples:
+                with self.subTest(prefix=value[:5]):
+                    (repo / "README.md").write_text(original + '\n{"credential": "' + value + '"}\n')
+                    files = sorted(p for p in repo.rglob("*") if p.is_file() and p.name != "SHA256SUMS")
+                    (repo / "SHA256SUMS").write_text("".join(f"{digest(p.read_bytes())}  {p.relative_to(repo).as_posix()}\n" for p in files))
+                    before = snapshot(repo)
+                    result = subprocess.run([sys.executable, "-B", str(repo / "scripts/audit.py")], text=True, capture_output=True, timeout=15)
+                    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                    self.assertIn("value hidden", result.stdout)
+                    self.assertNotIn(value, result.stdout + result.stderr)
+                    self.assertEqual(snapshot(repo), before)
 
 
 class InstallerTests(unittest.TestCase):
