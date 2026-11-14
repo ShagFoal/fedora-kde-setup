@@ -5,9 +5,11 @@
 !/.gitignore
 !/README.md
 !/KUBUNTU.md
+!/TUMBLEWEED.md
 !/PLASMA_MANUAL.md
 !/install.sh
 !/install-kubuntu.sh
+!/install-tumbleweed.sh
 !/dependencies.tsv
 !/SHA256SUMS
 !/restore.json

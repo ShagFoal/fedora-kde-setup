@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED = {
     ".gitignore", "README.md", "KUBUNTU.md", "PLASMA_MANUAL.md", "install.sh",
-    "install-kubuntu.sh", "scripts/install-common.sh",
+    "install-kubuntu.sh", "install-tumbleweed.sh", "TUMBLEWEED.md", "scripts/install-common.sh",
     "dependencies.tsv", "SHA256SUMS", "restore.json", "scripts/audit.py",
     "scripts/links.py", "scripts/restore.py", "tests/test_install.py",
     "tests/test_restore.py", "tests/test_links.py",

@@ -40,6 +40,12 @@ if name in ('rpm', 'dpkg-query'):
     package = sys.argv[-1]
     if package == 'kubuntu-settings-desktop' and os.environ.get('MOCK_NO_KUBUNTU'):
         sys.exit(1)
+    if package == 'plasma6-session' and os.environ.get('MOCK_NO_PLASMA'):
+        sys.exit(1)
+    if name == 'rpm' and package == 'python3' and os.environ.get('MOCK_PACKAGE_MANAGER') == 'zypper':
+        # In Tumbleweed, python313/python314 may provide the unversioned capability.
+        if '--whatprovides' not in sys.argv:
+            sys.exit(1)
     missing = os.environ.get('MOCK_MISSING_PACKAGES', 'zsh').split(',')
     if package in missing and not marker.exists():
         if name == 'dpkg-query' and os.environ.get('MOCK_DPKG_MISSING_STATUS'):
@@ -58,6 +64,14 @@ if name == 'sudo':
             sys.exit(100 if os.environ.get('MOCK_APT_UPDATE_FAILURE') else 0)
         assert sys.argv[2:6] == ['install', '-y', '--no-remove', '--no-install-recommends']
         packages = sys.argv[6:]
+    elif sys.argv[1] == 'zypper':
+        assert sys.argv[2] == '--non-interactive'
+        if sys.argv[3:] == ['refresh']:
+            sys.exit(106 if os.environ.get('MOCK_ZYPPER_REFRESH_FAILURE') else 0)
+        assert sys.argv[3:6] == ['install', '--no-recommends', '--no-allow-vendor-change']
+        packages = sys.argv[6:]
+        if os.environ.get('MOCK_ZYPPER_UNKNOWN_CAPABILITY'):
+            sys.exit(104)
     else:
         assert sys.argv[1:4] == ['dnf', 'install', '-y']
         packages = sys.argv[4:]
@@ -152,7 +166,7 @@ class InstallerTests(unittest.TestCase):
         self.fixtures.mkdir()
         self.log = self.base / "calls"
         self.command_log = self.base / "commands"
-        for name in ["rpm", "dpkg-query", "sudo", "dnf", "apt-get", "curl", "fc-cache", "zsh"]:
+        for name in ["rpm", "dpkg-query", "sudo", "dnf", "apt-get", "zypper", "curl", "fc-cache", "zsh"]:
             command = self.bin / name
             command.write_text(MOCK)
             command.chmod(0o755)
@@ -514,6 +528,84 @@ python3() {
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(snapshot(self.home), before)
         self.assertNotIn('sudo', self.calls())
+
+
+class TumbleweedInstallerTests(InstallerTests):
+    entrypoint = 'install-tumbleweed.sh'
+    os_release_contents = 'ID=opensuse-tumbleweed\nVERSION_ID=20261111\n'
+    query_command = 'rpm'
+    package_manager = 'zypper'
+
+    def test_refresh_then_install_only_missing_packages_without_recommends_or_vendor_switch(self):
+        self.run_installer(MOCK_MISSING_PACKAGES='fastfetch,ca-certificates-mozilla')
+        commands = [json.loads(line) for line in self.command_log.read_text().splitlines()]
+        privileged = [command for command in commands if command[0] == 'sudo']
+        self.assertEqual(privileged, [
+            ['sudo', 'zypper', '--non-interactive', 'refresh'],
+            ['sudo', 'zypper', '--non-interactive', 'install', '--no-recommends', '--no-allow-vendor-change', 'fastfetch', 'ca-certificates-mozilla'],
+        ])
+        self.assertNotIn('dpkg-query', self.calls())
+        self.assertNotIn('dnf', self.calls())
+        self.assertNotIn('apt-get', self.calls())
+
+    def test_lean_kde_installation_gets_suse_packages_and_ca_roots(self):
+        missing = [
+            'zsh', 'konsole', 'fastfetch', 'dolphin', 'git-core', 'curl', 'python3',
+            'fontconfig', 'util-linux', 'restic', 'rclone', 'ca-certificates',
+            'ca-certificates-mozilla', 'diffutils', 'gh', 'openssh-clients', 'xdg-utils',
+        ]
+        self.run_installer(MOCK_MISSING_PACKAGES=','.join(missing))
+        commands = [json.loads(line) for line in self.command_log.read_text().splitlines()]
+        installs = [command for command in commands if command[:4] == ['sudo', 'zypper', '--non-interactive', 'install']]
+        self.assertEqual(len(installs), 1)
+        self.assertEqual(installs[0][6:], missing)
+        self.assertTrue((self.home / '.zshrc').is_symlink())
+        self.run_installer('--check')
+
+    def test_python_capability_is_checked_by_provider(self):
+        self.run_installer('--dry-run', MOCK_MISSING_PACKAGES='', FORBID_SUDO='1', FORBID_DOWNLOAD='1')
+        commands = [json.loads(line) for line in self.command_log.read_text().splitlines()]
+        self.assertIn(['rpm', '-q', '--quiet', '--whatprovides', 'python3'], commands)
+
+    def test_rolling_snapshot_version_is_not_pinned(self):
+        for version in ('20261111', '20261201', '20270105', ''):
+            with self.subTest(version=version):
+                self.os_release.write_text('ID=opensuse-tumbleweed\nVERSION_ID=' + version + '\n')
+                self.run_installer('--dry-run', FORBID_SUDO='1', FORBID_DOWNLOAD='1')
+
+    def test_leap_slowroll_and_transactional_variants_are_rejected(self):
+        for identifier in ('opensuse-leap', 'opensuse-slowroll', 'opensuse-microos', 'opensuse-aeon'):
+            with self.subTest(identifier=identifier):
+                self.os_release.write_text('ID=' + identifier + '\nVERSION_ID=20261111\n')
+                before = snapshot(self.home)
+                result = self.run_installer(success=False)
+                self.assertIn('This installer targets openSUSE Tumbleweed', result.stderr)
+                self.assertEqual(snapshot(self.home), before)
+                self.assertEqual(self.calls(), [])
+
+    def test_missing_plasma_is_rejected_before_sudo_or_config_changes(self):
+        before = snapshot(self.home)
+        result = self.run_installer(success=False, MOCK_NO_PLASMA='1')
+        self.assertIn('Plasma 6 is missing', result.stderr)
+        self.assertEqual(snapshot(self.home), before)
+        self.assertNotIn('sudo', self.calls())
+
+    def test_refresh_failure_with_skipped_repository_stops_before_install_and_downloads(self):
+        target = self.home / '.zshrc'
+        target.write_text('keep original config')
+        self.run_installer(success=False, MOCK_ZYPPER_REFRESH_FAILURE='1')
+        self.assertEqual(self.calls().count('sudo'), 1)
+        self.assertNotIn('curl', self.calls())
+        self.assertFalse(target.is_symlink())
+        self.assertEqual(target.read_text(), 'keep original config')
+
+    def test_unknown_capability_exit_104_is_not_treated_as_success(self):
+        target = self.home / '.zshrc'
+        target.write_text('keep original config')
+        self.run_installer(success=False, MOCK_ZYPPER_UNKNOWN_CAPABILITY='1')
+        self.assertNotIn('curl', self.calls())
+        self.assertFalse(target.is_symlink())
+        self.assertEqual(target.read_text(), 'keep original config')
 
 
 if __name__ == "__main__":

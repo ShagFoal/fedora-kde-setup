@@ -3,7 +3,7 @@ set -Eeuo pipefail
 umask 077
 
 [[ -n ${REPO_DIR:-} && -n ${SETUP_PLATFORM:-} && -n ${SETUP_ENTRYPOINT:-} ]] || {
-  printf 'Run install.sh or install-kubuntu.sh from the repository root.\n' >&2
+  printf 'Run a platform install*.sh entrypoint from the repository root.\n' >&2
   exit 2
 }
 MODE=install
@@ -53,6 +53,11 @@ case "$SETUP_PLATFORM" in
     readonly PLATFORM_NAME='Kubuntu 26.10' PACKAGE_KIND=DEB
     command -v dpkg-query >/dev/null || die 'dpkg-query is required to check installed packages.'
     ;;
+  tumbleweed)
+    [[ ${ID:-} = opensuse-tumbleweed ]] || die 'This installer targets openSUSE Tumbleweed.'
+    readonly PLATFORM_NAME='openSUSE Tumbleweed' PACKAGE_KIND=RPM
+    command -v rpm >/dev/null || die 'RPM is required to check installed packages.'
+    ;;
   *) die 'Unsupported installer platform.' ;;
 esac
 ARCH=$(uname -m)
@@ -94,6 +99,9 @@ safe_file() {
 package_installed() {
   if [[ "$SETUP_PLATFORM" = fedora ]]; then
     rpm -q --quiet "$1"
+  elif [[ "$SETUP_PLATFORM" = tumbleweed ]]; then
+    # Tumbleweed can provide unversioned Python through a versioned RPM.
+    rpm -q --quiet --whatprovides "$1"
   else
     local status
     status=$(LC_ALL=C dpkg-query -W -f='${Status}' "$1" 2>/dev/null) || return 1
@@ -103,6 +111,8 @@ package_installed() {
 
 if [[ "$SETUP_PLATFORM" = kubuntu ]]; then
   package_installed kubuntu-settings-desktop || die 'Kubuntu desktop settings are missing. Install Kubuntu before running this setup.'
+elif [[ "$SETUP_PLATFORM" = tumbleweed ]]; then
+  package_installed plasma6-session || die 'Plasma 6 is missing. Install the KDE desktop before running this setup.'
 fi
 
 PACKAGES=(zsh konsole fastfetch dolphin git curl python3 fontconfig util-linux restic rclone)
@@ -110,6 +120,9 @@ if [[ "$SETUP_PLATFORM" = kubuntu ]]; then
   # Minimal installations may omit Git's SSH transport and desktop URL helpers.
   # These are explicit because APT Recommends are disabled for this profile.
   PACKAGES+=(ca-certificates diffutils gh openssh-client xdg-utils)
+elif [[ "$SETUP_PLATFORM" = tumbleweed ]]; then
+  PACKAGES=(zsh konsole fastfetch dolphin git-core curl python3 fontconfig util-linux restic rclone
+    ca-certificates ca-certificates-mozilla diffutils gh openssh-clients xdg-utils)
 fi
 readonly -a PACKAGES
 declare -a MISSING_PACKAGES=()
@@ -162,6 +175,9 @@ warnings() {
   if [[ "$SETUP_PLATFORM" = kubuntu ]]; then
     note 'Kubuntu Minimal profile: only explicit packages and required dependencies; APT Recommends are disabled.'
     note 'Kubuntu preparation, drivers and optional apps: see KUBUNTU.md.'
+  elif [[ "$SETUP_PLATFORM" = tumbleweed ]]; then
+    note 'Tumbleweed: required packages only (--no-recommends); existing package vendors are preserved.'
+    note 'Update Tumbleweed separately with zypper dup; Packman, drivers and optional apps: see TUMBLEWEED.md.'
   fi
   note 'Live configs stay in Main; keep their source folder and back it up with Main.'
 }
@@ -171,6 +187,8 @@ if [[ "$MODE" = dry-run ]]; then
   note "Target: $PLATFORM_NAME / $ARCH; missing $PACKAGE_KIND packages: ${MISSING_PACKAGES[*]:-none}"
   if [[ "$SETUP_PLATFORM" = kubuntu && ${#MISSING_PACKAGES[@]} -gt 0 ]]; then
     note 'Would run: sudo apt-get update; then sudo apt-get install -y --no-remove --no-install-recommends with the missing packages.'
+  elif [[ "$SETUP_PLATFORM" = tumbleweed && ${#MISSING_PACKAGES[@]} -gt 0 ]]; then
+    note 'Would run: sudo zypper --non-interactive refresh; then sudo zypper --non-interactive install --no-recommends --no-allow-vendor-change with the missing packages.'
   fi
   python3 "$REPO_DIR/scripts/links.py" --dry-run
   while IFS=$'\t' read -r arch url archive_hash member file_hash relative mode; do
@@ -232,10 +250,14 @@ if (( ${#MISSING_PACKAGES[@]} )); then
   command -v sudo >/dev/null || die 'sudo is required to install missing packages.'
   if [[ "$SETUP_PLATFORM" = fedora ]]; then
     sudo dnf install -y "${MISSING_PACKAGES[@]}"
-  else
+  elif [[ "$SETUP_PLATFORM" = kubuntu ]]; then
     command -v apt-get >/dev/null || die 'APT is required to install missing packages.'
     sudo apt-get -o APT::Update::Error-Mode=any update
     sudo apt-get install -y --no-remove --no-install-recommends "${MISSING_PACKAGES[@]}"
+  else
+    command -v zypper >/dev/null || die 'Zypper is required to install missing packages.'
+    sudo zypper --non-interactive refresh
+    sudo zypper --non-interactive install --no-recommends --no-allow-vendor-change "${MISSING_PACKAGES[@]}"
   fi
 fi
 MISSING_PACKAGES=()

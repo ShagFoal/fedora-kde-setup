@@ -1,8 +1,10 @@
 # Fedora 45 KDE Setup
 
 Для **Kubuntu 26.10 Minimal** используй отдельный установщик `install-kubuntu.sh`
-и инструкцию [KUBUNTU.md](KUBUNTU.md). `install.sh` по-прежнему предназначен
-для Fedora 45. Оба установщика используют общие зависимости, восстановление
+и инструкцию [KUBUNTU.md](KUBUNTU.md).
+Для **openSUSE Tumbleweed KDE** — `install-tumbleweed.sh` и [TUMBLEWEED.md](TUMBLEWEED.md).
+`install.sh` по-прежнему предназначен для Fedora 45.
+Установщики используют общие зависимости, восстановление
 Main и создание ссылок; общая реализация находится в `scripts/install-common.sh`.
 
 Подготовка системы и восстановление настроек Zsh, Starship, Konsole, Dolphin,
