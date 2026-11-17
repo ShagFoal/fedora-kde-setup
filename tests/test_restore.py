@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import pty
 import shutil
 import subprocess
 import sys
@@ -67,6 +68,7 @@ class RestoreTests(unittest.TestCase):
             return json.dumps(self.records).encode()
         self.assertIn("restore", command)
         self.assertIn("--verify", command)
+        self.assertIn("--sparse", command)
         self.assertEqual(command[command.index("--overwrite") + 1], "never")
         self.assertIn("a" * 64 + ":/Main", command)
         target = Path(command[command.index("--target") + 1])
@@ -119,6 +121,54 @@ class RestoreTests(unittest.TestCase):
         self.assertEqual(len(self.configs), 1)
         self.assertEqual(sum("snapshots" in command for command, _ in self.commands), 2)
         self.assert_private_cleanup()
+
+    def test_configured_uses_custom_config_and_keeps_refreshed_tokens_in_private_copy(self):
+        original = self.base / "saved account.conf"
+        original.write_text("[gdrive]\ntype=drive\n")
+        original.chmod(0o640)
+        before = original.stat()
+        environment = {
+            "HOME": str(self.home), "PATH": "/usr/bin:/bin",
+            "RCLONE_CONFIG": str(original), "RESTIC_PASSWORD": self.phrase,
+        }
+        def simulate(command, env, work, operation):
+            if command[0] == "rclone":
+                config = Path(env["RCLONE_CONFIG"])
+                self.assertEqual(config, work / "rclone.conf")
+                self.assertEqual(config.read_bytes(), original.read_bytes())
+                self.assertEqual(config.stat().st_mode & 0o777, 0o600)
+                config.write_text("simulated token refresh\n")
+                self.configs.append(config)
+            else:
+                self.assertEqual(env["RESTIC_PASSWORD"], self.phrase)
+            return self.command(command, env, work, operation)
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch.object(restore, "run_private", side_effect=simulate),
+            patch.object(restore.subprocess, "run", side_effect=AssertionError("unexpected rclone setup")),
+            patch.object(restore.getpass, "getpass", side_effect=AssertionError("unexpected password prompt")),
+            patch("builtins.input", return_value=""),
+            redirect_stdout(self.output),
+        ):
+            self.assertTrue(restore.restore_files(self.profile, configured=True).is_dir())
+        self.assertEqual(original.read_text(), "[gdrive]\ntype=drive\n")
+        self.assertEqual(original.stat().st_mode, before.st_mode)
+        self.assertEqual(original.stat().st_mtime_ns, before.st_mtime_ns)
+        self.assert_private_cleanup()
+
+    def test_activation_preserves_empty_main_created_after_preflight(self):
+        staged = self.base / "staged-home/Restored-Main-fixture/Main"
+        staged.mkdir(parents=True)
+        home = staged.parent.parent
+        target = home / "Main"
+        chmod = Path.chmod
+        def create_during_activation(path, mode):
+            chmod(path, mode)
+            target.mkdir()
+        with patch.object(Path, "chmod", create_during_activation), self.assertRaises(FileExistsError):
+            links.adopt_main(staged, home, require_configs=False)
+        self.assertTrue(staged.is_dir())
+        self.assertTrue(target.is_dir())
 
     def test_three_wrong_attempts_stop_without_creating_destination(self):
         self.failed_attempts = 3
@@ -182,6 +232,11 @@ class NativeRestoreTests(unittest.TestCase):
                 config = source / "Main" / links.CONFIG_DIRECTORY / links.CONFIG_FILES[relative]
                 config.parent.mkdir(parents=True, exist_ok=True)
                 config.write_text("# restored config fixture\n")
+            ssh = source / "Main" / links.CONFIG_DIRECTORY / ".ssh"
+            ssh.mkdir(mode=0o700)
+            (ssh / "config").touch(mode=0o600)
+            (source / "Main/Projects").mkdir()
+            (source / "Main/Projects/notes.txt").write_text("project fixture")
             storage = base / "storage"
             repository = storage / "backups/main-restic"
             repository.mkdir(parents=True)
@@ -224,7 +279,64 @@ class NativeRestoreTests(unittest.TestCase):
                 links.apply(home)
             for source_config, config_link in links.plan(home):
                 self.assertTrue(links.correct_link(source_config, config_link))
+            self.assertTrue((home / ".ssh").is_symlink())
+            self.assertEqual((home / ".ssh").resolve().stat().st_mode & 0o777, 0o700)
+            self.assertTrue((home / "Projects").is_symlink())
+            self.assertEqual((home / "Projects/notes.txt").read_text(), "project fixture")
             self.assertEqual((home / "Main-existing-fixture/existing.txt").read_text(), "do not replace")
+
+            # Run the public configured CLI from a fresh home. Existing user
+            # files and credentials must survive activation until links are applied.
+            new_home = base / "new-home"
+            account = new_home / ".config/rclone/rclone.conf"
+            account.parent.mkdir(parents=True)
+            account_contents = "[gdrive]\ntype=alias\nremote=" + str(storage) + "\n"
+            account.write_text(account_contents)
+            account.chmod(0o600)
+            phrase_path = new_home / "restic-password"
+            phrase_path.write_text(phrase + "\n")
+            phrase_path.chmod(0o600)
+            (new_home / ".zshrc").write_text("original shell settings")
+            for name in (".ssh", "Projects"):
+                (new_home / name).mkdir(mode=0o700)
+            env = {
+                "HOME": str(new_home), "PATH": os.defpath,
+                "RESTIC_PASSWORD_FILE": str(phrase_path),
+                # This would prevent linking the configs. Restoring Main works independently.
+                "STARSHIP_CONFIG": str(new_home / "custom-starship.toml"),
+            }
+            master, slave = pty.openpty()
+            try:
+                os.write(master, b"\n")
+                result = subprocess.run(
+                    [sys.executable, "-B", str(ROOT / "scripts/restore.py"), str(ROOT / "restore.json"),
+                     "--configured", "--activate-main"],
+                    env=env, cwd=base, stdin=slave, stdout=slave, stderr=slave, timeout=45,
+                )
+                os.set_blocking(master, False)
+                output_chunks = []
+                try:
+                    while chunk := os.read(master, 16384):
+                        output_chunks.append(chunk)
+                except BlockingIOError:
+                    pass
+                report = b"".join(output_chunks).decode()
+                self.assertEqual(result.returncode, 0, report)
+                self.assertIn("Main готов", report)
+                self.assertNotIn(phrase, report)
+            finally:
+                os.close(slave)
+                os.close(master)
+            self.assertEqual((new_home / "Main/Projects/notes.txt").read_text(), "project fixture")
+            self.assertEqual((new_home / ".zshrc").read_text(), "original shell settings")
+            for name in (".ssh", "Projects"):
+                self.assertFalse((new_home / name).is_symlink())
+                self.assertEqual(list((new_home / name).iterdir()), [])
+            self.assertFalse(any(new_home.glob("Restored-Main-*")))
+            self.assertEqual(account.read_text(), account_contents)
+            self.assertEqual(account.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(phrase_path.read_text(), phrase + "\n")
+            self.assertEqual(contents(), before)
 
 
 if __name__ == "__main__":

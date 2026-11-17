@@ -36,45 +36,15 @@ with open(os.environ['CALL_LOG'], 'a') as log:
 with open(os.environ['COMMAND_LOG'], 'a') as log:
     log.write(json.dumps([name, *sys.argv[1:]]) + '\\n')
 marker = pathlib.Path(os.environ['PACKAGE_MARKER'])
-if name in ('rpm', 'dpkg-query'):
+if name == 'rpm':
+    assert sys.argv[1:4] == ['-q', '--quiet', '--whatprovides']
     package = sys.argv[-1]
-    if package == 'kubuntu-settings-desktop' and os.environ.get('MOCK_NO_KUBUNTU'):
-        sys.exit(1)
-    if package == 'plasma6-session' and os.environ.get('MOCK_NO_PLASMA'):
-        sys.exit(1)
-    if name == 'rpm' and package == 'python3' and os.environ.get('MOCK_PACKAGE_MANAGER') == 'zypper':
-        # In Tumbleweed, python313/python314 may provide the unversioned capability.
-        if '--whatprovides' not in sys.argv:
-            sys.exit(1)
     missing = os.environ.get('MOCK_MISSING_PACKAGES', 'zsh').split(',')
-    if package in missing and not marker.exists():
-        if name == 'dpkg-query' and os.environ.get('MOCK_DPKG_MISSING_STATUS'):
-            print(os.environ['MOCK_DPKG_MISSING_STATUS'], end='')
-            sys.exit(0)
-        sys.exit(1)
-    if name == 'dpkg-query':
-        assert sys.argv[1:3] == ['-W', '-f=${Status}']
-        print(os.environ.get('MOCK_DPKG_STATUS', 'install ok installed'), end='')
-    sys.exit(0)
+    sys.exit(package in missing and not marker.exists())
 if name == 'sudo':
     assert not os.environ.get('FORBID_SUDO'), 'Unexpected sudo'
-    assert sys.argv[1] == os.environ['MOCK_PACKAGE_MANAGER']
-    if sys.argv[1] == 'apt-get':
-        if sys.argv[2:] == ['-o', 'APT::Update::Error-Mode=any', 'update']:
-            sys.exit(100 if os.environ.get('MOCK_APT_UPDATE_FAILURE') else 0)
-        assert sys.argv[2:6] == ['install', '-y', '--no-remove', '--no-install-recommends']
-        packages = sys.argv[6:]
-    elif sys.argv[1] == 'zypper':
-        assert sys.argv[2] == '--non-interactive'
-        if sys.argv[3:] == ['refresh']:
-            sys.exit(106 if os.environ.get('MOCK_ZYPPER_REFRESH_FAILURE') else 0)
-        assert sys.argv[3:6] == ['install', '--no-recommends', '--no-allow-vendor-change']
-        packages = sys.argv[6:]
-        if os.environ.get('MOCK_ZYPPER_UNKNOWN_CAPABILITY'):
-            sys.exit(104)
-    else:
-        assert sys.argv[1:4] == ['dnf', 'install', '-y']
-        packages = sys.argv[4:]
+    assert sys.argv[1:4] == ['dnf5', 'install', '-y']
+    packages = sys.argv[4:]
     assert 'mpv' not in packages, 'MPV must be installed by the user'
     for required in os.environ.get('REQUIRED_PACKAGES', '').split(','):
         assert not required or required in packages
@@ -137,11 +107,6 @@ class AuditTests(unittest.TestCase):
 
 
 class InstallerTests(unittest.TestCase):
-    entrypoint = 'install.sh'
-    os_release_contents = 'ID=fedora\nVERSION_ID=45\n'
-    query_command = 'rpm'
-    package_manager = 'dnf'
-
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="dotfiles-test-")
         self.addCleanup(self.temporary.cleanup)
@@ -150,9 +115,10 @@ class InstallerTests(unittest.TestCase):
         shutil.copytree(ROOT, self.repo, ignore=shutil.ignore_patterns(".git", "__pycache__"))
         # Substitute only inside the temporary checkout; production always reads /etc/os-release.
         self.os_release = self.base / "os-release"
-        self.os_release.write_text(self.os_release_contents)
-        engine = self.repo / "scripts/install-common.sh"
-        engine.write_text(engine.read_text().replace('/etc/os-release', str(self.os_release)))
+        self.os_release.write_text("ID=fedora\nVERSION_ID=45\n")
+        engine = self.repo / "install.sh"
+        self.atomic_marker = self.base / "ostree-booted"
+        engine.write_text(engine.read_text().replace('/etc/os-release', str(self.os_release)).replace('/run/ostree-booted', str(self.atomic_marker)))
         self.home = self.base / "home"
         self.home.mkdir()
         self.sources = self.home / "Main" / links.CONFIG_DIRECTORY
@@ -160,13 +126,15 @@ class InstallerTests(unittest.TestCase):
             source = self.sources / links.CONFIG_FILES[relative]
             source.parent.mkdir(parents=True, exist_ok=True)
             source.write_text("# fixture config\n")
+        (self.sources / ".ssh").mkdir(mode=0o700)
+        (self.home / "Main/Projects").mkdir()
         self.bin = self.base / "bin"
         self.bin.mkdir()
         self.fixtures = self.base / "fixtures"
         self.fixtures.mkdir()
         self.log = self.base / "calls"
         self.command_log = self.base / "commands"
-        for name in ["rpm", "dpkg-query", "sudo", "dnf", "apt-get", "zypper", "curl", "fc-cache", "zsh"]:
+        for name in ["rpm", "sudo", "dnf5", "curl", "fc-cache", "zsh", "restic", "rclone"]:
             command = self.bin / name
             command.write_text(MOCK)
             command.chmod(0o755)
@@ -176,7 +144,7 @@ class InstallerTests(unittest.TestCase):
         self.env.update(
             HOME=str(self.home), PATH=f"{self.bin}:/usr/bin:/bin",
             CALL_LOG=str(self.log), PACKAGE_MARKER=str(self.base / "packages-installed"),
-            COMMAND_LOG=str(self.command_log), MOCK_PACKAGE_MANAGER=self.package_manager,
+            COMMAND_LOG=str(self.command_log),
             FIXTURES=str(self.fixtures),
         )
         self.rows = []
@@ -211,7 +179,7 @@ class InstallerTests(unittest.TestCase):
 
     def run_installer(self, *args, success=True, **environment):
         result = subprocess.run(
-            ["bash", str(self.repo / self.entrypoint), *args], cwd=self.base,
+            ["bash", str(self.repo / "install.sh"), *args], cwd=self.base,
             env={**self.env, **environment}, text=True, capture_output=True, timeout=30,
         )
         if success:
@@ -227,7 +195,7 @@ class InstallerTests(unittest.TestCase):
         before = snapshot(self.home)
         self.run_installer("--dry-run", FORBID_DOWNLOAD="1", FORBID_SUDO="1")
         self.assertEqual(snapshot(self.home), before)
-        self.assertTrue(all(name == self.query_command for name in self.calls()))
+        self.assertTrue(all(name == "rpm" for name in self.calls()))
 
     def test_installs_dependencies_and_links_from_main(self):
         old = self.home / ".zshrc"
@@ -257,18 +225,36 @@ class InstallerTests(unittest.TestCase):
 
     def test_links_only_does_not_install_or_download(self):
         self.run_installer("--links-only", FORBID_DOWNLOAD="1", FORBID_SUDO="1")
-        self.assertNotIn("curl", self.calls())
-        self.assertNotIn("sudo", self.calls())
+        self.assertEqual(self.calls(), [])
         self.assertTrue((self.home / ".zshrc").is_symlink())
+        for target, source in [(".ssh", self.sources / ".ssh"), ("Projects", self.home / "Main/Projects")]:
+            self.assertTrue((self.home / target).is_symlink(), target)
+            self.assertEqual((self.home / target).resolve(), source)
 
     def test_wrong_os_or_release_stops_before_package_manager_or_home_changes(self):
-        for contents in ('ID=debian\nVERSION_ID=26.10\n', 'ID=ubuntu\nVERSION_ID=26.04\n'):
+        for contents in ('ID=other\nVERSION_ID=45\n', 'ID=fedora\nVERSION_ID=44\n'):
             with self.subTest(contents=contents):
                 self.os_release.write_text(contents)
                 before = snapshot(self.home)
                 self.run_installer(success=False)
                 self.assertEqual(snapshot(self.home), before)
                 self.assertEqual(self.calls(), [])
+
+    def test_atomic_deployment_is_rejected_before_writes(self):
+        self.atomic_marker.touch()
+        before = snapshot(self.home)
+        self.run_installer(success=False)
+        self.assertEqual(self.calls(), [])
+        self.assertEqual(snapshot(self.home), before)
+
+    def test_installs_only_missing_fedora_packages_in_one_transaction(self):
+        self.run_installer(MOCK_MISSING_PACKAGES='restic,ca-certificates,openssh-clients')
+        commands = [json.loads(line) for line in self.command_log.read_text().splitlines()]
+        privileged = [command for command in commands if command[0] == 'sudo']
+        self.assertEqual(privileged, [
+            ['sudo', 'dnf5', 'install', '-y', 'restic', 'ca-certificates', 'openssh-clients']
+        ])
+        self.assertIn(['rpm', '-q', '--quiet', '--whatprovides', '/usr/bin/curl'], commands)
 
     def test_check_fails_without_writing_or_installing_when_packages_are_missing(self):
         self.run_installer()
@@ -318,9 +304,9 @@ class InstallerTests(unittest.TestCase):
         self.run_installer("--dry-run", success=False)
         self.assertEqual(snapshot(self.home), before)
 
-    def test_shared_implementation_is_verified_before_execution(self):
-        engine = self.repo / 'scripts/install-common.sh'
-        engine.write_text('printf unexpected > "$HOME/executed"\n' + engine.read_text())
+    def test_link_helper_is_verified_before_execution(self):
+        helper = self.repo / 'scripts/links.py'
+        helper.write_text('from pathlib import Path\n(Path.home() / "executed").touch()\n')
         before = snapshot(self.home)
         self.run_installer('--dry-run', success=False)
         self.assertEqual(snapshot(self.home), before)
@@ -355,13 +341,25 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(snapshot(self.home), before)
         self.assertNotIn("sudo", self.calls())
 
-    def test_restore_mode_precedes_linking(self):
+    def test_restore_stops_before_packages_and_links_until_separate_install(self):
         shutil.rmtree(self.home / "Main")
         helper = self.repo / "scripts/restore.py"
-        helper.write_text("from pathlib import Path\nimport os,sys\nfrom links import CONFIGS,CONFIG_DIRECTORY,CONFIG_FILES\nassert sys.argv[2]=='--activate-main'\nroot=Path(os.environ['HOME'])/'Main'/CONFIG_DIRECTORY\nfor relative in CONFIGS:\n p=root/CONFIG_FILES[relative]\n p.parent.mkdir(parents=True,exist_ok=True)\n p.write_text('# restored config\\n')\n")
+        helper.write_text("""from pathlib import Path
+import os, sys
+from links import CONFIGS, CONFIG_DIRECTORY, CONFIG_FILES
+assert sys.argv[2:] == ['--configured', '--activate-main']
+main = Path(os.environ['HOME']) / 'Main'
+root = main / CONFIG_DIRECTORY
+for relative in CONFIGS:
+    path = root / CONFIG_FILES[relative]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('# restored config\\n')
+(root / '.ssh').mkdir(mode=0o700)
+(main / 'Projects').mkdir()
+""")
         self.update_lock()
         master, slave = pty.openpty()
-        child = subprocess.Popen(["bash", str(self.repo / self.entrypoint), "--restore"], env=self.env, cwd=self.base, stdin=slave, stdout=slave, stderr=slave)
+        child = subprocess.Popen(["bash", str(self.repo / "install.sh"), "--restore"], env=self.env, cwd=self.base, stdin=slave, stdout=slave, stderr=slave)
         os.close(slave)
         output = bytearray()
         started = time.monotonic()
@@ -381,6 +379,12 @@ class InstallerTests(unittest.TestCase):
                 child.kill()
                 child.wait()
             os.close(master)
+        self.assertTrue((self.home / "Main/Projects").is_dir())
+        self.assertFalse(os.path.lexists(self.home / ".ssh"))
+        self.assertFalse(os.path.lexists(self.home / "Projects"))
+        self.assertFalse(os.path.lexists(self.home / ".zshrc"))
+        self.assertEqual(self.calls(), [])
+        self.run_installer()
         self.assertTrue((self.home / ".zshrc").is_symlink())
         self.assertEqual((self.home / ".zshrc").read_text(), "# restored config\n")
 
@@ -417,98 +421,6 @@ class InstallerTests(unittest.TestCase):
         self.assertNotIn(synthetic, result.stdout + result.stderr)
 
 
-class KubuntuInstallerTests(InstallerTests):
-    entrypoint = 'install-kubuntu.sh'
-    os_release_contents = 'ID=ubuntu\nVERSION_ID=26.10\n'
-    query_command = 'dpkg-query'
-    package_manager = 'apt-get'
-
-    def test_apt_refreshes_indexes_then_installs_only_missing_packages_without_removals(self):
-        self.run_installer(MOCK_MISSING_PACKAGES='fastfetch,ca-certificates')
-        commands = [json.loads(line) for line in self.command_log.read_text().splitlines()]
-        privileged = [command for command in commands if command[0] == 'sudo']
-        self.assertEqual(privileged, [
-            ['sudo', 'apt-get', '-o', 'APT::Update::Error-Mode=any', 'update'],
-            ['sudo', 'apt-get', 'install', '-y', '--no-remove', '--no-install-recommends', 'fastfetch', 'ca-certificates'],
-        ])
-        self.assertNotIn('rpm', self.calls())
-        self.assertNotIn('dnf', self.calls())
-
-    def test_minimal_installation_gets_all_required_packages_without_full_desktop(self):
-        missing = [
-            'zsh', 'konsole', 'fastfetch', 'dolphin', 'git', 'curl', 'python3',
-            'fontconfig', 'util-linux', 'restic', 'rclone', 'ca-certificates',
-            'diffutils', 'gh', 'openssh-client', 'xdg-utils',
-        ]
-        self.run_installer(MOCK_MISSING_PACKAGES=','.join(missing))
-        commands = [json.loads(line) for line in self.command_log.read_text().splitlines()]
-        installs = [command for command in commands if command[:3] == ['sudo', 'apt-get', 'install']]
-        self.assertEqual(len(installs), 1)
-        self.assertEqual(installs[0][3:6], ['-y', '--no-remove', '--no-install-recommends'])
-        self.assertEqual(installs[0][6:], missing)
-        self.assertTrue((self.home / '.zshrc').is_symlink())
-        self.run_installer('--check')
-
-    def test_minimal_desktop_does_not_require_kubuntu_desktop_metapackage(self):
-        # Calamares Minimal may omit the full-desktop metapackage while keeping settings.
-        self.run_installer('--dry-run', MOCK_MISSING_PACKAGES='kubuntu-desktop', FORBID_SUDO='1', FORBID_DOWNLOAD='1')
-        self.assertNotIn('sudo', self.calls())
-        commands = [json.loads(line) for line in self.command_log.read_text().splitlines()]
-        queried = [command[-1] for command in commands if command[0] == 'dpkg-query']
-        self.assertNotIn('kubuntu-desktop', queried)
-
-    def test_missing_python_is_bootstrapped_before_config_helpers_run(self):
-        # Only the temporary checkout hides Python until the mock APT install succeeds.
-        # No production environment variable can skip real OS or dependency checks.
-        engine = self.repo / 'scripts/install-common.sh'
-        shim = '''command() {
-  if [[ "$*" = '-v python3' && ! -f "$PACKAGE_MARKER" ]]; then
-    return 1
-  fi
-  builtin command "$@"
-}
-python3() {
-  [[ -f "$PACKAGE_MARKER" ]] || { printf 'Python ran before installation\\n' >&2; return 1; }
-  /usr/bin/python3 "$@"
-}
-'''
-        engine.write_text(shim + engine.read_text())
-        self.update_lock()
-        self.run_installer(MOCK_MISSING_PACKAGES='python3', REQUIRED_PACKAGES='python3')
-        self.assertTrue((self.home / '.zshrc').is_symlink())
-
-    def test_apt_update_failure_prevents_downloads_and_live_config_changes(self):
-        target = self.home / '.zshrc'
-        target.write_text('keep original config')
-        self.run_installer(success=False, MOCK_APT_UPDATE_FAILURE='1')
-        self.assertEqual(self.calls().count('sudo'), 1)
-        self.assertNotIn('curl', self.calls())
-        self.assertFalse(target.is_symlink())
-        self.assertEqual(target.read_text(), 'keep original config')
-
-    def test_plain_ubuntu_without_kubuntu_settings_is_rejected(self):
-        before = snapshot(self.home)
-        result = self.run_installer(success=False, MOCK_NO_KUBUNTU='1')
-        self.assertIn('Kubuntu desktop settings are missing', result.stderr)
-        self.assertEqual(snapshot(self.home), before)
-        self.assertNotIn('sudo', self.calls())
-
-    def test_held_installed_packages_do_not_trigger_apt(self):
-        self.run_installer('--dry-run', MOCK_MISSING_PACKAGES='', MOCK_DPKG_STATUS='hold ok installed', FORBID_SUDO='1')
-        self.assertNotIn('sudo', self.calls())
-
-    def test_residual_config_and_unconfigured_packages_are_installed(self):
-        for status in ('deinstall ok config-files', 'install ok unpacked', 'install ok half-configured'):
-            with self.subTest(status=status):
-                marker = self.base / 'packages-installed'
-                marker.unlink(missing_ok=True)
-                self.run_installer(MOCK_DPKG_MISSING_STATUS=status, REQUIRED_PACKAGES='zsh')
-                self.assertTrue(marker.exists())
-
-    def test_kubuntu_id_is_accepted_as_well_as_ubuntu_id(self):
-        self.os_release.write_text('ID=kubuntu\nVERSION_ID=26.10\n')
-        self.run_installer('--dry-run', FORBID_SUDO='1', FORBID_DOWNLOAD='1')
-
     def test_restore_never_replaces_existing_main(self):
         # With a terminal, the existing-Main guard precedes any sudo or restoration.
         # The shared restore helper also has an independent existing-Main guard.
@@ -519,7 +431,7 @@ python3() {
         before = snapshot(self.home)
         try:
             result = subprocess.run(
-                ['bash', str(self.repo / self.entrypoint), '--restore'],
+                ['bash', str(self.repo / "install.sh"), '--restore'],
                 env=self.env, cwd=self.base, stdin=slave, stdout=slave, stderr=slave, timeout=10,
             )
         finally:
@@ -528,84 +440,6 @@ python3() {
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(snapshot(self.home), before)
         self.assertNotIn('sudo', self.calls())
-
-
-class TumbleweedInstallerTests(InstallerTests):
-    entrypoint = 'install-tumbleweed.sh'
-    os_release_contents = 'ID=opensuse-tumbleweed\nVERSION_ID=20261111\n'
-    query_command = 'rpm'
-    package_manager = 'zypper'
-
-    def test_refresh_then_install_only_missing_packages_without_recommends_or_vendor_switch(self):
-        self.run_installer(MOCK_MISSING_PACKAGES='fastfetch,ca-certificates-mozilla')
-        commands = [json.loads(line) for line in self.command_log.read_text().splitlines()]
-        privileged = [command for command in commands if command[0] == 'sudo']
-        self.assertEqual(privileged, [
-            ['sudo', 'zypper', '--non-interactive', 'refresh'],
-            ['sudo', 'zypper', '--non-interactive', 'install', '--no-recommends', '--no-allow-vendor-change', 'fastfetch', 'ca-certificates-mozilla'],
-        ])
-        self.assertNotIn('dpkg-query', self.calls())
-        self.assertNotIn('dnf', self.calls())
-        self.assertNotIn('apt-get', self.calls())
-
-    def test_lean_kde_installation_gets_suse_packages_and_ca_roots(self):
-        missing = [
-            'zsh', 'konsole', 'fastfetch', 'dolphin', 'git-core', 'curl', 'python3',
-            'fontconfig', 'util-linux', 'restic', 'rclone', 'ca-certificates',
-            'ca-certificates-mozilla', 'diffutils', 'gh', 'openssh-clients', 'xdg-utils',
-        ]
-        self.run_installer(MOCK_MISSING_PACKAGES=','.join(missing))
-        commands = [json.loads(line) for line in self.command_log.read_text().splitlines()]
-        installs = [command for command in commands if command[:4] == ['sudo', 'zypper', '--non-interactive', 'install']]
-        self.assertEqual(len(installs), 1)
-        self.assertEqual(installs[0][6:], missing)
-        self.assertTrue((self.home / '.zshrc').is_symlink())
-        self.run_installer('--check')
-
-    def test_python_capability_is_checked_by_provider(self):
-        self.run_installer('--dry-run', MOCK_MISSING_PACKAGES='', FORBID_SUDO='1', FORBID_DOWNLOAD='1')
-        commands = [json.loads(line) for line in self.command_log.read_text().splitlines()]
-        self.assertIn(['rpm', '-q', '--quiet', '--whatprovides', 'python3'], commands)
-
-    def test_rolling_snapshot_version_is_not_pinned(self):
-        for version in ('20261111', '20261201', '20270105', ''):
-            with self.subTest(version=version):
-                self.os_release.write_text('ID=opensuse-tumbleweed\nVERSION_ID=' + version + '\n')
-                self.run_installer('--dry-run', FORBID_SUDO='1', FORBID_DOWNLOAD='1')
-
-    def test_leap_slowroll_and_transactional_variants_are_rejected(self):
-        for identifier in ('opensuse-leap', 'opensuse-slowroll', 'opensuse-microos', 'opensuse-aeon'):
-            with self.subTest(identifier=identifier):
-                self.os_release.write_text('ID=' + identifier + '\nVERSION_ID=20261111\n')
-                before = snapshot(self.home)
-                result = self.run_installer(success=False)
-                self.assertIn('This installer targets openSUSE Tumbleweed', result.stderr)
-                self.assertEqual(snapshot(self.home), before)
-                self.assertEqual(self.calls(), [])
-
-    def test_missing_plasma_is_rejected_before_sudo_or_config_changes(self):
-        before = snapshot(self.home)
-        result = self.run_installer(success=False, MOCK_NO_PLASMA='1')
-        self.assertIn('Plasma 6 is missing', result.stderr)
-        self.assertEqual(snapshot(self.home), before)
-        self.assertNotIn('sudo', self.calls())
-
-    def test_refresh_failure_with_skipped_repository_stops_before_install_and_downloads(self):
-        target = self.home / '.zshrc'
-        target.write_text('keep original config')
-        self.run_installer(success=False, MOCK_ZYPPER_REFRESH_FAILURE='1')
-        self.assertEqual(self.calls().count('sudo'), 1)
-        self.assertNotIn('curl', self.calls())
-        self.assertFalse(target.is_symlink())
-        self.assertEqual(target.read_text(), 'keep original config')
-
-    def test_unknown_capability_exit_104_is_not_treated_as_success(self):
-        target = self.home / '.zshrc'
-        target.write_text('keep original config')
-        self.run_installer(success=False, MOCK_ZYPPER_UNKNOWN_CAPABILITY='1')
-        self.assertNotIn('curl', self.calls())
-        self.assertFalse(target.is_symlink())
-        self.assertEqual(target.read_text(), 'keep original config')
 
 
 if __name__ == "__main__":

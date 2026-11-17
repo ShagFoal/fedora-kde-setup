@@ -9,11 +9,14 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED = {
-    ".gitignore", "README.md", "KUBUNTU.md", "PLASMA_MANUAL.md", "install.sh",
-    "install-kubuntu.sh", "install-tumbleweed.sh", "TUMBLEWEED.md", "scripts/install-common.sh",
+    ".gitignore", "README.md", "PLASMA_MANUAL.md", "install.sh",
     "dependencies.tsv", "SHA256SUMS", "restore.json", "scripts/audit.py",
-    "scripts/links.py", "scripts/restore.py", "tests/test_install.py",
-    "tests/test_restore.py", "tests/test_links.py",
+    "scripts/links.py", "scripts/migrate-projects-bind.sh", "scripts/restore.py", "tests/test_install.py",
+    "tests/test_restore.py", "tests/test_links.py", "tests/test_migrate_projects.py",
+}
+LOCAL_PLASMA_IMAGES = {
+    f"KDE-Themes Screenshot/{name}.png"
+    for name in ("Colors", "Plasma Style", "Pointers", "WIndow Decorations", "icons")
 }
 RULES = {
     "private key": r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----",
@@ -29,6 +32,7 @@ RULES = {
 }
 issues = []
 actual = set()
+scanned_configs = 0
 
 def scan(path, label):
     for number, line in enumerate(path.read_text().splitlines(), 1):
@@ -42,6 +46,11 @@ for path in ROOT.rglob("*"):
         continue
     if path.is_symlink():
         issues.append(f"{relative}: unexpected symbolic link in bootstrap repo")
+    elif relative in LOCAL_PLASMA_IMAGES and path.is_file():
+        # Local Plasma reference images are outside the distributed bootstrap.
+        with path.open("rb") as stream:
+            if stream.read(8) != b"\x89PNG\r\n\x1a\n":
+                issues.append(f"{relative}: expected PNG image")
     elif path.is_file():
         actual.add(relative)
         if relative not in ALLOWED:
@@ -53,36 +62,46 @@ for name in sorted(ALLOWED - actual):
 if not issues:
     try:
         profile = json.loads((ROOT / "restore.json").read_text())
-        assert profile == {"remote": "gdrive", "repository_path": "backups/main-restic", "tag": "main-only", "source_directory": "Main"}
+        if profile != {"remote": "gdrive", "repository_path": "backups/main-restic", "tag": "main-only", "source_directory": "Main"}:
+            raise ValueError("unexpected restore profile")
         checked = set()
         for line in (ROOT / "SHA256SUMS").read_text().splitlines():
             expected, name = line.split("  ", 1)
-            assert name in ALLOWED - {"SHA256SUMS"}
+            if name not in ALLOWED - {"SHA256SUMS"} or name in checked:
+                raise ValueError("unexpected or duplicate manifest entry")
             checked.add(name)
-            assert hashlib.sha256((ROOT / name).read_bytes()).hexdigest() == expected, name
-        assert checked == ALLOWED - {"SHA256SUMS"}
+            if hashlib.sha256((ROOT / name).read_bytes()).hexdigest() != expected:
+                issues.append(f"{name}: checksum mismatch")
+        if checked != ALLOWED - {"SHA256SUMS"}:
+            raise ValueError("incomplete manifest")
         for line in (ROOT / "dependencies.tsv").read_text().splitlines():
             if not line or line.startswith("#"):
                 continue
             arch, url, archive_sha, member, file_sha, target, mode = line.split("\t")
             parsed = urlsplit(url)
-            assert arch in {"all", "x86_64", "aarch64"} and mode in {"644", "755"}
-            assert parsed.scheme == "https" and parsed.hostname in {"github.com", "raw.githubusercontent.com"}
-            assert not parsed.username and not parsed.password
-            assert re.fullmatch(r"[0-9a-f]{64}", archive_sha) and re.fullmatch(r"[0-9a-f]{64}", file_sha)
-            assert not target.startswith("/") and ".." not in Path(target).parts
-            assert target.startswith((".local/bin/", ".zsh/zsh-autosuggestions/", ".local/share/fonts/JetBrainsMonoNerdFont/"))
-    except (AssertionError, ValueError, KeyError, OSError) as error:
+            if arch not in {"all", "x86_64", "aarch64"} or mode not in {"644", "755"}:
+                raise ValueError("unexpected architecture or file mode")
+            if parsed.scheme != "https" or parsed.netloc not in {"github.com", "raw.githubusercontent.com"}:
+                raise ValueError("unexpected dependency URL")
+            if not all(re.fullmatch(r"[0-9a-f]{64}", digest) for digest in (archive_sha, file_sha)):
+                raise ValueError("invalid dependency checksum")
+            if ".." in Path(target).parts or not target.startswith((".local/bin/", ".zsh/zsh-autosuggestions/", ".local/share/fonts/JetBrainsMonoNerdFont/")):
+                raise ValueError("unexpected dependency destination")
+    except (ValueError, KeyError, OSError) as error:
         issues.append("Profile/dependency/integrity validation failed: " + type(error).__name__)
 if len(sys.argv) > 1:
     if sys.argv[1:] != ["--configs"]:
         issues.append("Usage: audit.py [--configs]")
-    else:
+    elif not issues:
+        sys.dont_write_bytecode = True
         from links import plan, LinkError
         try:
-            for source, target in plan():
-                scan(source, "Main/" + source.relative_to(Path.home() / "Main").as_posix())
-        except (LinkError, OSError) as error:
+            for source, _ in plan():
+                # Project trees and the private SSH directory are directory links.
+                if source.is_file():
+                    scan(source, "Main/" + source.relative_to(Path.home() / "Main").as_posix())
+                    scanned_configs += 1
+        except (LinkError, OSError, UnicodeError) as error:
             issues.append("Main config validation failed: " + type(error).__name__)
 if issues:
     print("AUDIT FAILED")
@@ -90,4 +109,4 @@ if issues:
     sys.exit(1)
 print(f"AUDIT PASSED: {len(actual)} allowlisted bootstrap files; no recognizable secrets found.")
 if sys.argv[1:]:
-    print("Also scanned nine current Main configs; values were not displayed.")
+    print(f"Scanned {scanned_configs} Main config files. Directory links were checked without scanning their contents.")

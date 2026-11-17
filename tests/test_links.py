@@ -27,6 +27,10 @@ class LinkTests(unittest.TestCase):
             source = self.sources / links.CONFIG_FILES[relative]
             source.parent.mkdir(parents=True, exist_ok=True)
             source.write_text("# fixture config\n")
+        self.ssh = self.sources / ".ssh"
+        self.ssh.mkdir(mode=0o700)
+        self.projects = self.home / "Main/Projects"
+        self.projects.mkdir()
         env = {key: value for key, value in os.environ.items() if key not in {"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "ZDOTDIR", "STARSHIP_CONFIG"}}
         env["HOME"] = str(self.home)
         self.addCleanup(patch.stopall)
@@ -36,14 +40,92 @@ class LinkTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             return links.apply(self.home)
 
-    def test_nine_links_point_into_main_and_writes_update_main(self):
+    def test_eleven_links_point_into_main_and_writes_update_main(self):
         self.apply()
-        for source, target in links.plan(self.home):
+        entries = links.plan(self.home)
+        self.assertEqual(len(entries), 11)
+        for source, target in entries:
             self.assertTrue(links.correct_link(source, target))
+        self.assertEqual((self.home / ".ssh").resolve(), self.ssh)
+        self.assertEqual((self.home / "Projects").resolve(), self.projects)
+        (self.home / "Projects/example").write_text("project")
+        self.assertEqual((self.projects / "example").read_text(), "project")
         target = self.home / ".config/starship.toml"
         target.write_text("# changed by application\n")
         self.assertEqual((self.sources / links.CONFIG_FILES[".config/starship.toml"]).read_text(), "# changed by application\n")
         self.assertIsNone(self.apply())
+
+    def test_existing_directories_are_preserved_whole_in_private_backup(self):
+        for name in (".ssh", "Projects"):
+            target = self.home / name
+            target.mkdir(mode=0o700)
+            (target / "old").write_text(f"old {name}")
+            (target / "relative").symlink_to("old")
+        projects_inode = (self.home / "Projects").stat().st_ino
+        backup = self.apply()
+        for name in (".ssh", "Projects"):
+            self.assertEqual((backup / name / "old").read_text(), f"old {name}")
+            self.assertEqual(os.readlink(backup / name / "relative"), "old")
+            self.assertFalse((self.home / name / "old").exists())
+        self.assertEqual((backup / "Projects").stat().st_ino, projects_inode)
+        self.assertEqual((backup / ".ssh").stat().st_mode & 0o777, 0o700)
+        self.assertEqual(backup.stat().st_mode & 0o777, 0o700)
+        self.assertIsNone(self.apply())
+
+    def test_failed_directory_replacement_restores_both_moved_directories(self):
+        for name in (".ssh", "Projects"):
+            (self.home / name).mkdir(mode=0o700)
+            (self.home / name / "old").write_text(name)
+        native = os.replace
+        def fail_projects(source, destination):
+            if destination == self.home / "Projects":
+                raise PermissionError("fixture failure")
+            return native(source, destination)
+        with patch.object(links.os, "replace", side_effect=fail_projects), self.assertRaises(PermissionError):
+            self.apply()
+        for name in (".ssh", "Projects"):
+            self.assertFalse((self.home / name).is_symlink())
+            self.assertEqual((self.home / name / "old").read_text(), name)
+        self.assertFalse(os.path.lexists(self.home / ".zshrc"))
+
+    def test_missing_or_linked_directory_source_prevents_changes(self):
+        self.projects.rmdir()
+        with self.assertRaises(links.LinkError):
+            self.apply()
+        self.projects.symlink_to(self.home)
+        with self.assertRaises(links.LinkError):
+            self.apply()
+        self.assertFalse(os.path.lexists(self.home / ".zshrc"))
+
+    def test_ssh_permissions_are_validated_without_changing_files(self):
+        self.ssh.chmod(0o755)
+        with self.assertRaisesRegex(links.LinkError, "0700"):
+            self.apply()
+        self.ssh.chmod(0o700)
+        identity = self.ssh / "id_fixture"
+        identity.touch(mode=0o644)
+        identity.chmod(0o644)
+        with self.assertRaisesRegex(links.LinkError, "id_fixture"):
+            self.apply()
+        identity.chmod(0o600)
+        (self.ssh / "id_fixture.pub").touch(mode=0o644)
+        self.apply()
+
+    def test_mount_on_or_below_target_is_reported_before_creating_any_links(self):
+        target = self.home / "Projects"
+        target.mkdir()
+        for mounted in (target, target / "separate filesystem"):
+            with self.subTest(mounted=mounted), patch.object(links, "mount_points", return_value={mounted}):
+                with self.assertRaisesRegex(links.LinkError, "точка монтирования"):
+                    self.apply()
+        self.assertFalse(os.path.lexists(self.home / ".zshrc"))
+        self.assertFalse((self.home / "Projects").is_symlink())
+
+    def test_state_inside_directory_to_be_moved_is_rejected(self):
+        with patch.dict(os.environ, {"XDG_STATE_HOME": str(self.home / "Projects/state")}):
+            with self.assertRaises(links.LinkError):
+                self.apply()
+        self.assertFalse(os.path.lexists(self.home / ".zshrc"))
 
     def test_replaced_regular_file_is_backed_up_with_mode_and_time(self):
         target = self.home / ".zshrc"
@@ -145,6 +227,7 @@ class LinkTests(unittest.TestCase):
             target = self.sources / links.CONFIG_FILES[relative]
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(legacy / relative, target)
+        self.ssh.mkdir(mode=0o700)
         backup = self.apply()
         for source, target in links.plan(self.home):
             self.assertTrue(links.correct_link(source, target))
