@@ -78,7 +78,10 @@ elif name == 'git':
     else:
         assert sys.argv[3] == 'show'
         sys.stdout.buffer.write((pathlib.Path(os.environ['FIXTURES']) / sys.argv[4].removeprefix('HEAD:')).read_bytes())
-elif name not in ('fc-cache', 'zsh'):
+elif name == 'fc-cache':
+    if os.environ.get('MOCK_FONT_CACHE_FAILURE'):
+        sys.exit(101)
+elif name != 'zsh':
     raise SystemExit('Unexpected command: ' + name)
 '''
 
@@ -347,6 +350,35 @@ class InstallerTests(unittest.TestCase):
         result = self.run_installer(success=False, FORBID_SUDO="1")
         self.assertIn("downloaded zsh-patina cannot run", result.stderr)
         self.assertEqual(snapshot(self.home), before)
+        self.run_installer("--check", FORBID_DOWNLOAD="1", FORBID_SUDO="1")
+
+    def test_failed_font_cache_refresh_restores_the_previous_release(self):
+        self.run_installer()
+        patina = self.home / ".local/bin/zsh-patina"
+        record = self.home / ".local/state/dotfiles/dependencies.json"
+        original = patina.read_bytes()
+        original_record = record.read_bytes()
+        self.make_archive(self.patina, {"zsh-patina": b"#!/bin/sh\n# newer build\nexit 0\n"})
+        self.release("michel-kraemer/zsh-patina", self.patina, "11")
+
+        result = self.run_installer(success=False, MOCK_FONT_CACHE_FAILURE="1", FORBID_SUDO="1")
+
+        self.assertIn("fc-cache", result.stderr)
+        self.assertEqual(patina.read_bytes(), original)
+        self.assertEqual(record.read_bytes(), original_record)
+        self.run_installer("--check", FORBID_DOWNLOAD="1", FORBID_SUDO="1")
+
+    def test_failed_first_font_cache_refresh_removes_new_dependencies(self):
+        result = self.run_installer(success=False, MOCK_FONT_CACHE_FAILURE="1")
+
+        self.assertIn("fc-cache", result.stderr)
+        self.assertFalse((self.home / ".local/bin/zsh-patina").exists())
+        self.assertFalse((self.home / ".local/bin/starship").exists())
+        fonts = self.home / ".local/share/fonts/JetBrainsMonoNerdFont"
+        self.assertEqual(list(fonts.iterdir()), [])
+        self.assertFalse((self.home / ".local/state/dotfiles/dependencies.json").exists())
+        self.assertFalse((self.home / ".zshrc").is_symlink())
+        self.run_installer(FORBID_SUDO="1")
         self.run_installer("--check", FORBID_DOWNLOAD="1", FORBID_SUDO="1")
 
     def test_config_parent_symlink_is_rejected(self):

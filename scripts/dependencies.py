@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Install upstream releases and verify locally installed copies."""
 import argparse
+from contextlib import ExitStack
 import hashlib
 import json
 import os
@@ -42,11 +43,12 @@ def safe_file(path):
         raise DependencyError(f"Expected a regular file or an unused path: {path}")
 
 
-def download(url, destination):
+def download(url, destination, *, max_time=300):
     subprocess.run([
         "curl", "--disable", "--fail", "--location", "--silent", "--show-error",
         "--proto", "=https", "--proto-redir", "=https", "--tlsv1.2",
-        "--connect-timeout", "15", "--max-time", "300", "--retry", "2",
+        "--connect-timeout", "15", "--max-time", str(max_time), "--retry", "2",
+        "--speed-limit", "1024", "--speed-time", "60",
         "--max-filesize", str(MAX_BYTES), "--output", str(destination), url,
     ], check=True)
 
@@ -72,7 +74,8 @@ def latest_archive(work, repo, filename):
     if parsed.scheme != "https" or parsed.netloc != "github.com" or not parsed.path.startswith(f"/{repo}/releases/download/"):
         raise DependencyError(f"Unexpected download URL for {repo}.")
     archive = work / asset["name"]
-    download(url, archive)
+    # Release archives can take longer than metadata on a slow connection.
+    download(url, archive, max_time=1200)
     if sha256(archive) != checksum.removeprefix("sha256:"):
         raise DependencyError(f"Download checksum mismatch for {asset['name']}.")
     print(f"{repo}: {release['tag_name']}", flush=True)
@@ -193,41 +196,63 @@ def verify_launch(files, bin_dir):
         subprocess.run(["zsh", "-dfn", str(plugin)], check=True, timeout=10)
 
 
+def back_up_files(home, backup_dir, targets):
+    backup = None
+    originals = {}
+    for target in targets:
+        safe_file(target)
+        if not target.exists():
+            continue
+        if backup is None:
+            directory_chain(backup_dir)
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            backup = Path(tempfile.mkdtemp(prefix=stamp + "-dependencies-", dir=backup_dir))
+            print(f"Dependency backups: {backup}", flush=True)
+        saved = backup / target.relative_to(home)
+        saved.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(target, saved, follow_symlinks=False)
+        originals[target] = saved
+    return originals
+
+
+def restore_file(target, saved):
+    if saved is None:
+        safe_file(target)
+        target.unlink(missing_ok=True)
+    else:
+        write_file(target, saved.read_bytes(), stat.S_IMODE(saved.stat().st_mode))
+
+
 def install(home, targets, record, font_dir, arch):
     with tempfile.TemporaryDirectory(prefix="fedora-kde-dependencies-") as temp:
         files = fetch_latest(Path(temp), arch)
     verify_launch(files, targets[BINARIES[0]][0].parent)
     checksums = {}
-    backup = None
-    fonts_changed = False
+    updates = {}
     for name, (target, mode) in targets.items():
-        safe_file(target)
-        relative = target.relative_to(home)
         digest = hashlib.sha256(files[name]).hexdigest()
-        checksums[str(relative)] = digest
-        if matches(target, digest, mode):
-            continue
-        if target.exists():
-            if backup is None:
-                backup_dir = record.parent / "backups"
-                directory_chain(backup_dir)
-                backup_dir.mkdir(parents=True, exist_ok=True)
-                stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-                backup = Path(tempfile.mkdtemp(prefix=stamp + "-dependencies-", dir=backup_dir))
-                print(f"Dependency backups: {backup}", flush=True)
-            saved = backup / relative
-            saved.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(target, saved, follow_symlinks=False)
-        write_file(target, files[name], mode)
-        print(f"Installed: {target}", flush=True)
-        fonts_changed |= target.parent == font_dir
+        checksums[str(target.relative_to(home))] = digest
+        if not matches(target, digest, mode):
+            updates[target] = (files[name], mode)
 
     data = (json.dumps(checksums, indent=2, sort_keys=True) + "\n").encode()
     checksums_changed = not record.is_file() or record.read_bytes() != data
-    if fonts_changed or checksums_changed:
-        subprocess.run(["fc-cache", str(font_dir)], check=True)
-    if checksums_changed:
-        write_file(record, data, 0o600)
+    fonts_changed = any(target.parent == font_dir for target in updates)
+    backup_targets = [*updates, record] if checksums_changed else updates
+    originals = back_up_files(home, record.parent / "backups", backup_targets)
+    with ExitStack() as rollback:
+        for target, (payload, mode) in updates.items():
+            rollback.callback(restore_file, target, originals.get(target))
+            write_file(target, payload, mode)
+        if fonts_changed or checksums_changed:
+            subprocess.run(["fc-cache", str(font_dir)], check=True)
+        if checksums_changed:
+            rollback.callback(restore_file, record, originals.get(record))
+            write_file(record, data, 0o600)
+        rollback.pop_all()
+    for target in updates:
+        print(f"Installed: {target}", flush=True)
 
 
 def main():

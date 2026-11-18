@@ -1,45 +1,59 @@
 # Fedora 45 KDE
 
-Чистая установка на Lenovo IdeaPad Gaming 3 15IAH7, с Intel Iris Xe и RTX 3050 Ti.
+Чистая установка RPM-версии Fedora KDE Plasma Desktop 45, x86_64. Ноутбук Lenovo IdeaPad Gaming 3 15IAH7 с Intel Iris Xe и RTX 3050 Ti.
 Публичный репозиторий содержит гайд и установщик. Личные конфиги, SSH и проекты возвращаются из снимка `Main`.
 
 ## До переустановки
 
 1. Проверь с другого устройства вход в Google Drive. Сохрани пароль Restic и данные OAuth вне диска, который будешь стирать.
-2. Сделай свежий снимок и проверь восстановление. Для репетиции нужно место под вторую копию `Main`.
+2. Обнови установщик, сделай свежий снимок и проверь восстановление. Для репетиции нужно место под вторую копию `Main`.
 
 ```bash
-"$HOME/Main/System/Scripts/backup-main" &&
-  cd "$HOME/Main/System/Setup" &&
+cd "$HOME/Main/System/Setup" &&
+  git pull --ff-only &&
+  "$HOME/Main/System/Scripts/backup-main" &&
   bash install.sh --rehearse
 ```
 
-Выбери свежий снимок и дождись `REHEARSAL PASSED`. Открой важный проект из `~/Restored-Main-*/Main` и запиши ID снимка. Сохрани отдельно нужные файлы за пределами `Main`. Для запасной копии на SSD смотри [шаг 3](#3-восстановить-main). [Проверка файлов в Restic](https://restic.readthedocs.io/en/stable/050_restore.html).
+Выбери свежий снимок и дождись `REHEARSAL PASSED`. Открой важный проект из `~/Restored-Main-*/Main`, проверь, что там есть последние правки, и запиши ID снимка. Отдельно сохрани нужные файлы за пределами `Main` и файлы из исключённых каталогов `node_modules`, `__pycache__`, `target`, `.next` и `dist`, если они нужны. На время репетиции и восстановления отложи `restic prune` и `restic forget --prune`. Для запасной копии на SSD смотри [шаг 3](#3-восстановить-main). [Проверка файлов в Restic](https://restic.readthedocs.io/en/stable/050_restore.html).
 
 3. Скачай Fedora 45 KDE x86_64, проверь образ через **Verify** и запиши флешку через Fedora Media Writer. В Live KDE проверь Wi-Fi, звук и тачпад. В установщике сверь модель и размер SSD. На этом ноутбуке `/` и `/home` находятся на одном Btrfs-разделе. Удаление раздела стирает оба подтома. [Загрузка Fedora KDE](https://fedoraproject.org/kde/download/).
 
 ## 1. Обновить Fedora и подключить RPM Fusion
 
-Открой Konsole. Переходи к следующей команде после успешного завершения текущей.
+Закрой Discover и открой Konsole. Переходи к следующей команде после успешного завершения текущей.
+
+### DNF5
 
 ```bash
 cat /etc/fedora-release
-sudo dnf5 install dnf5-plugins
-sudo dnf5 config-manager setopt updates-testing.enabled=0
+sudo dnf5 install dnf5-plugins &&
+  sudo dnf5 config-manager setopt --create-missing-dir \
+    max_parallel_downloads=10 installonly_limit=3 updates-testing.enabled=0
+dnf5 --dump-main-config | grep -E '^(max_parallel_downloads|installonly_limit|pkg_gpgcheck) ='
+dnf5 repo list --enabled
 sudo dnf5 upgrade --refresh
 ```
 
-Перезагрузи ноутбук для загрузки нового ядра. Подключи RPM Fusion и стабильные обновления. [RPM Fusion](https://rpmfusion.org/Configuration).
+`max_parallel_downloads=10` разрешает до десяти одновременных загрузок, а `installonly_limit=3` оставляет до трёх версий ядра для отката. Проверь, что `pkg_gpgcheck = 1`. Оставь выбор зеркал через metalink. Если сеть нестабильна, `sudo dnf5 config-manager unsetopt max_parallel_downloads` вернёт штатное значение. При ошибке метаданных `fedora` или `updates` дождись доступности репозитория и повтори обновление. [Настройки DNF5](https://dnf5.readthedocs.io/en/latest/dnf5.conf.5.html).
+
+Fedora 45 хранит штатные `.repo` в `/usr/share/dnf5/repos.d`. `setopt` запишет общие параметры в `/etc/dnf/dnf.conf`, а настройки репозиториев в `/etc/dnf/repos.override.d/99-config_manager.repo`. Для чистой установки достаточно этих команд. [Изменение Fedora 45](https://fedoraproject.org/wiki/Changes/RelocateRpmRepoConfigsToUsr) · [Команда config-manager](https://dnf5.readthedocs.io/en/latest/dnf5_plugins/config-manager.8.html).
+
+### RPM Fusion и кодеки
+
+Перезагрузи ноутбук для загрузки нового ядра. Затем подключи RPM Fusion Free и Nonfree. При первом запросе импорта ключа сверь отпечаток с опубликованным RPM Fusion. [Подключение RPM Fusion](https://rpmfusion.org/Configuration) · [Ключи RPM Fusion](https://rpmfusion.org/keys).
 
 ```bash
 sudo dnf5 install \
   "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm" \
-  "https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm"
-sudo dnf5 config-manager setopt \
-  rpmfusion-free-updates-testing.enabled=0 \
-  rpmfusion-nonfree-updates-testing.enabled=0
+  "https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm" &&
+  sudo dnf5 config-manager setopt --create-missing-dir \
+    rpmfusion-free-updates-testing.enabled=0 rpmfusion-nonfree-updates-testing.enabled=0
+dnf5 repo list --enabled
 sudo dnf5 install rpmfusion-free-appstream-data rpmfusion-nonfree-appstream-data
 ```
+
+В списке должны быть `fedora`, `updates`, `rpmfusion-free`, `rpmfusion-free-updates`, `rpmfusion-nonfree` и `rpmfusion-nonfree-updates`. `updates-testing` и RPM Fusion testing должны быть выключены.
 
 Проверь транзакцию замены FFmpeg перед подтверждением. Если DNF предлагает удалить Plasma или нужные приложения, отмени её. [Кодеки RPM Fusion](https://rpmfusion.org/Howto/Multimedia).
 
@@ -82,16 +96,15 @@ rpm -q --qf '%{VERSION}\n' akmod-nvidia
 modinfo -k "$(uname -r)" -F version nvidia
 ```
 
-Дождись сборки и сравни две версии. Если они совпадают, перезагрузи ноутбук. Проверь `nvidia-smi` для RTX 3050 Ti и `vainfo` для Intel iHD. При ошибке сборки смотри `/var/cache/akmods/nvidia/.last.log`. [Драйвер NVIDIA из RPM Fusion](https://rpmfusion.org/Howto/NVIDIA).
+Дождись сборки и сравни две версии. Если они совпадают, перезагрузи ноутбук. Проверь `nvidia-smi` для RTX 3050 Ti и `vainfo` для Intel iHD. Если DNF не находит `kernel-devel` для `uname -r`, сначала обнови Fedora и загрузись в последнее установленное ядро. При ошибке сборки смотри `/var/cache/akmods/nvidia/.last.log`. Прежнее ядро можно выбрать в меню GRUB. [Драйвер NVIDIA из RPM Fusion](https://rpmfusion.org/Howto/NVIDIA).
 
 ## 2. Настроить Restic и rclone
 
 ```bash
 sudo dnf5 install git python3 restic rclone
-rclone config
 ```
 
-Если `gdrive` уже настроен, сразу проверь снимок. Для нового подключения выбери следующие параметры. [Google Drive в rclone](https://rclone.org/drive/).
+Если `gdrive` уже настроен, сразу проверь снимок. Для нового подключения запусти `rclone config` и выбери следующие параметры. [Google Drive в rclone](https://rclone.org/drive/).
 
 | Запрос rclone | Ответ |
 |---|---|
@@ -103,15 +116,15 @@ rclone config
 | Shared Drive / сохранить / выйти | `n` → `y` → `q` |
 
 ```bash
-rclone listremotes
-restic --no-lock -r rclone:gdrive:backups/main-restic snapshots --tag main-only --latest 1
+rclone listremotes | grep -Fx 'gdrive:' &&
+  restic --no-lock -r rclone:gdrive:backups/main-restic snapshots --tag main-only --latest 1
 ```
 
 Введи пароль существующего репозитория Restic. Сверь `gdrive:` и ID снимка. Для собственного OAuth-клиента в статусе **Testing** может потребоваться `rclone config reconnect gdrive:`. [Срок действия токенов Google](https://developers.google.com/identity/protocols/oauth2#expiration).
 
 ## 3. Восстановить Main
 
-Клонируй публичный репозиторий вне `~/Main`.
+Клонируй публичный репозиторий вне `~/Main`. Если там уже лежит этот клон, обнови его командой `git pull --ff-only` из его каталога.
 
 ```bash
 mkdir -p "$HOME/Downloads"
@@ -128,17 +141,18 @@ bash install.sh --restore
 <details>
 <summary>Запасная копия на внешнем SSD</summary>
 
-До переустановки замени `BACKUP` на метку смонтированного SSD. В выводе `findmnt` проверь, что это внешний диск.
+До переустановки замени `BACKUP` на метку смонтированного SSD. В выводе `findmnt` проверь, что этот путь является точкой монтирования внешнего диска.
 
 ```bash
 disk_repo="/run/media/$USER/BACKUP/main-restic"
-findmnt --target "$(dirname "$disk_repo")"
+findmnt --mountpoint "$(dirname "$disk_repo")"
 ```
 
-Для нового репозитория выполни `restic -r "$disk_repo" init` и сохрани его пароль. Подставь проверенный ID облачного снимка.
+Для нового репозитория выполни `restic -r "$disk_repo" init --from-repo rclone:gdrive:backups/main-restic --copy-chunker-params` и сохрани его пароль. Это сохраняет дедупликацию между копиями снимков. Подставь проверенный ID облачного снимка.
 
 ```bash
-restic -r "$disk_repo" copy --from-repo rclone:gdrive:backups/main-restic SNAPSHOT_ID &&
+findmnt --mountpoint "$(dirname "$disk_repo")" &&
+  restic -r "$disk_repo" copy --from-repo rclone:gdrive:backups/main-restic SNAPSHOT_ID &&
   restic -r "$disk_repo" check --read-data &&
   restic -r "$disk_repo" snapshots --tag main-only
 ```
@@ -147,7 +161,8 @@ restic -r "$disk_repo" copy --from-repo rclone:gdrive:backups/main-restic SNAPSH
 
 ```bash
 disk_repo="/run/media/$USER/BACKUP/main-restic"
-disk_restore=$(mktemp -d "$HOME/Restored-Main-XXXXXXXX") &&
+findmnt --mountpoint "$(dirname "$disk_repo")" &&
+  disk_restore=$(mktemp -d "$HOME/Restored-Main-XXXXXXXX") &&
   restic -r "$disk_repo" restore "SSD_SNAPSHOT_ID:/Main" --target "$disk_restore/Main" --sparse --overwrite never --verify &&
   chmod 700 "$disk_restore/Main" &&
   mv --update=none-fail --no-target-directory -- "$disk_restore/Main" "$HOME/Main"
@@ -159,15 +174,18 @@ disk_restore=$(mktemp -d "$HOME/Restored-Main-XXXXXXXX") &&
 
 ## 4. Применить настройки
 
-Закрой Dolphin. В Konsole выполни следующие команды и дождись `CHECK PASSED`.
+Закрой Dolphin. В Konsole выполни следующие команды и дождись `CHECK PASSED`. Первый запуск `--dry-run` покажет, какие ссылки и зависимости установщик собирается подключить.
 
 ```bash
-cd "$HOME/Downloads/fedora-kde-setup"
-bash install.sh && bash install.sh --check
-readlink "$HOME/.ssh" "$HOME/Projects"
+cd "$HOME/Downloads/fedora-kde-setup" &&
+  bash install.sh --dry-run &&
+  bash install.sh && bash install.sh --check &&
+  readlink "$HOME/.ssh" "$HOME/Projects"
 ```
 
-Обе символьные ссылки должны вести в `~/Main`, соответственно в `System/Configs/.ssh` и `Projects`. Установщик подключает также Zsh, Starship, Konsole, Fastfetch, Dolphin и MPV. Заменённые файлы сохраняются по пути, который он выводит. Открой новую Konsole и запусти `fastfetch`.
+Обе символьные ссылки должны вести в `~/Main`, соответственно в `System/Configs/.ssh` и `Projects`. Для каталога `.ssh` нужны права `0700`, для приватных ключей обычно `0600`. Установщик подключает также Zsh, Starship, Konsole, Fastfetch, Dolphin и MPV. Заменённые файлы сохраняются по пути, который он выводит. Открой новую Konsole и запусти `fastfetch`.
+
+Обычный запуск проверяет и устанавливает свежие стабильные версии Starship, zsh-patina, JetBrains Mono Nerd Font и zsh-autosuggestions. `--check` работает локально и сверяет контрольные суммы последней успешной установки. Если он пишет `Missing download checksums`, выполни обычный запуск установщика.
 
 <details>
 <summary>Личные приложения</summary>
