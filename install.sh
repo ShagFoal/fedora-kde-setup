@@ -10,11 +10,13 @@ case "${1:-}" in
   --dry-run) MODE=dry-run ;;
   --check) MODE=check ;;
   --restore) MODE=restore ;;
+  --rehearse) MODE=rehearse ;;
   --links-only) MODE=links-only ;;
   -h|--help)
-    printf 'Usage: ./install.sh [--dry-run | --check | --restore | --links-only]\n'
+    printf 'Usage: ./install.sh [--dry-run | --check | --restore | --rehearse | --links-only]\n'
     printf 'The default install fetches the latest upstream dependencies. --check verifies the local installation.\n'
     printf 'With --restore, recover Main from the configured rclone remote. Run ./install.sh afterwards to apply settings.\n'
+    printf 'With --rehearse, restore and validate Main in a separate directory before reinstalling Fedora.\n'
     printf 'Run as your regular user. sudo is used only for the system package manager.\n'
     exit 0 ;;
   *) printf 'Unknown option: %s\n' "$1" >&2; exit 2 ;;
@@ -27,8 +29,8 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 [[ $EUID -ne 0 ]] || die 'Run without sudo; the script requests sudo only for the system package manager.'
-if [[ "$MODE" = restore && ( ! -t 0 || ! -t 1 ) ]]; then
-  die '--restore requires an interactive terminal for credentials and snapshot selection.'
+if [[ ( "$MODE" = restore || "$MODE" = rehearse ) && ( ! -t 0 || ! -t 1 ) ]]; then
+  die "--$MODE requires an interactive terminal for credentials and snapshot selection."
 fi
 [[ -n ${HOME:-} && $HOME = /* && $HOME != / ]] || die 'HOME must be an absolute user directory.'
 [[ -d "$HOME" ]] || die 'HOME does not exist.'
@@ -43,12 +45,17 @@ source /etc/os-release
 [[ -f "$REPO_DIR/SHA256SUMS" && ! -L "$REPO_DIR/SHA256SUMS" ]] || die 'Missing regular SHA256SUMS.'
 (cd -- "$REPO_DIR" && sha256sum --check --status SHA256SUMS) || die 'Repository integrity check failed; review edits and regenerate SHA256SUMS.'
 
-if [[ "$MODE" = restore ]]; then
-  [[ ! -e "$HOME/Main" && ! -L "$HOME/Main" ]] || die 'Main already exists. Run ./install.sh to apply its settings.'
+if [[ "$MODE" = restore || "$MODE" = rehearse ]]; then
+  if [[ "$MODE" = restore && ( -e "$HOME/Main" || -L "$HOME/Main" ) ]]; then
+    die 'Main already exists. Run ./install.sh to apply its settings.'
+  fi
   for command in python3 restic rclone; do
     command -v "$command" >/dev/null || die "Install $command before restoring Main. See README.md."
   done
-  exec python3 -B "$REPO_DIR/scripts/restore.py" "$REPO_DIR/restore.json" --configured --activate-main
+  if [[ "$MODE" = restore ]]; then
+    exec python3 -B "$REPO_DIR/scripts/restore.py" "$REPO_DIR/restore.json" --configured --activate-main
+  fi
+  exec python3 -B "$REPO_DIR/scripts/restore.py" "$REPO_DIR/restore.json" --configured --rehearse
 elif [[ "$MODE" = links-only ]]; then
   command -v python3 >/dev/null || die 'Python 3 is required to link Main.'
   exec python3 -B "$REPO_DIR/scripts/links.py" --apply

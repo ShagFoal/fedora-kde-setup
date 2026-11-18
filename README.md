@@ -7,13 +7,14 @@
 
 | Шаг | Что должно получиться |
 |---|---|
+| [До установки](#перед-переустановкой) | Свежий снимок проверен, Live USB загружается, диск для установки выбран |
 | [1. Подготовить Fedora](#1-подготовить-fedora) | Обновлённая система, RPM Fusion, рабочие драйверы и кодеки |
 | [2. Настроить Restic и rclone](#2-настроить-restic-и-rclone) | Сохранённое подключение `gdrive` видит снимки с тегом `main-only` |
 | [3. Установить браузер](#3-установить-браузер) | Helium установлен и открывает ссылки из KDE |
 | [4. Восстановить Main](#4-восстановить-main) | `bash install.sh --restore` возвращает проверенные файлы в `~/Main` и завершается |
 | [5. Применить настройки](#5-применить-настройки) | Отдельный `bash install.sh` устанавливает зависимости и подключает 11 ссылок |
 
-Если `~/Main` сохранился на отдельном разделе, выполни шаги 1–3 и склонируй
+Если `~/Main` сохранился после установки, выполни шаги 1–3 и склонируй
 репозиторий в шаге 4. Пропусти только команду `bash install.sh --restore`, затем
 примени настройки в шаге 5. После перезагрузок возвращайся в этот README в GitHub.
 Предложения по автономности, видео и рабочим столам собраны в разделе
@@ -21,30 +22,46 @@
 
 ## Перед переустановкой
 
-1. Сделай свежий `backup-main`, дождись успешного завершения и проверь, что снимок
-   содержит `Main/Projects` и актуальные `Main/System/{Configs,Setup,Scripts}`,
-   в том числе скрытую папку `Configs/.ssh`. До форматирования
-   восстанови несколько важных файлов в отдельную папку и открой их.
-   Бэкап охватывает `~/Main`. В `backup-main` исключены каталоги
-   `node_modules`, `__pycache__`, `target`, `.next` и `dist`.
-2. Проверь доступ к GitHub, Google Drive, OAuth Client ID/Secret и паролю Restic
-   без установленной системы. Эти данные должны быть доступны вне стираемого диска
-   и вне Git-репозитория.
-3. Скачай именно Fedora KDE Plasma Desktop 45 Final с [официальной страницы](https://fedoraproject.org/kde/download/),
-   проверь подпись CHECKSUM и контрольную сумму ISO по инструкции там же.
-   Перед форматированием сверь целевой диск и сохраняемые разделы.
+### Сделать снимок и отрепетировать восстановление
 
-**Проверь копию до стирания диска.** В Konsole на действующей системе создай снимок
-и выведи список последних копий. Введи пароль существующего репозитория Restic,
-когда он будет запрошен:
+Проверь с другого устройства доступ к GitHub и Google Drive, включая
+двухфакторный вход, и убедись, что можешь получить пароль Restic и данные
+своего OAuth-клиента. Храни их вне стираемого диска и Git-репозитория.
+
+Сделай свежий снимок на действующей Fedora. `backup-main` охватывает `~/Main`
+с проектами, ключами SSH и конфигами. Из него исключены каталоги
+`node_modules`, `__pycache__`, `target`, `.next` и `dist`. Нужные файлы за
+пределами `Main`, включая профили приложений, сохрани отдельно.
 
 ```bash
-"$HOME/Main/System/Scripts/backup-main" &&
-  restic --no-lock -r rclone:gdrive:backups/main-restic snapshots --tag main-only --latest 1
+"$HOME/Main/System/Scripts/backup-main"
 ```
 
-Скопируй ID только что созданного снимка. Следующий блок вернёт один файл
-в отдельную временную папку и сравнит его с оригиналом:
+Из актуальной копии этого репозитория выполни проверку перед форматированием:
+
+```bash
+bash install.sh --rehearse
+```
+
+Выбери только что созданный снимок по дате и ID. Restic восстановит его
+в приватную папку `~/Restored-Main-*/Main` и проверит файлы через `--verify`.
+`REHEARSAL PASSED` означает, что проверены также все 11 источников ссылок,
+включая `Projects` и права `.ssh`. Открой важный файл проекта из этой копии
+и запиши ID снимка. Репетиция требует свободного места для второй копии.
+Держи основной бэкап на отдельном носителе или в Google Drive.
+На время чтения снимка отложи `restic prune` и `restic forget --prune`.
+[Проверка восстановленных файлов](https://restic.readthedocs.io/en/stable/050_restore.html).
+
+<details>
+<summary>Быстрая проверка одного файла, если нет места для полной копии</summary>
+
+Выведи список снимков и возьми ID свежего снимка:
+
+```bash
+restic --no-lock -r rclone:gdrive:backups/main-restic snapshots --tag main-only --latest 1
+```
+
+Следующий блок вернёт `zshrc` в отдельную временную папку и сравнит его с оригиналом:
 
 ```bash
 printf 'ID снимка: '
@@ -56,15 +73,78 @@ restic --no-lock -r rclone:gdrive:backups/main-restic restore "${snapshot_id}:/M
   printf 'Файл из снимка совпадает с текущим.\n'
 ```
 
-При ошибке восстанови доступ или создай новый снимок и повтори проверку **до
-форматирования**. Для важного файла проекта можно повторить проверку со своим путём
-внутри `Main`. Запиши ID проверенного снимка рядом с данными доступа.
+Повтори для важного файла проекта, указав его путь относительно `Main`.
+При ошибке проверь выбранный снимок и доступ к хранилищу до форматирования.
 
-Запиши образ KDE на USB через Fedora Media Writer, загрузи ноутбук с этой флешки
-и запусти установку. Проверь выбранный накопитель перед записью изменений.
-Если сохраняешь отдельный раздел с `/home`, убедись, что для него выключено
-форматирование. После установки загрузи Fedora с внутреннего диска, подключись
-к интернету и открой Konsole. [Скачать Fedora KDE и Media Writer](https://fedoraproject.org/kde/download/).
+</details>
+
+<details>
+<summary>Запасной путь для Main через внешний SSD</summary>
+
+В Dolphin открой смонтированный SSD. Укажи путь к папке для Restic на нём,
+заменив `BACKUP` на метку диска. В выводе `findmnt` должен быть виден внешний SSD.
+Для нового репозитория задай отдельный пароль и сохрани его вместе с данными доступа.
+
+```bash
+disk_repo="/run/media/$USER/BACKUP/main-restic"
+findmnt --target "$(dirname "$disk_repo")"
+```
+
+```bash
+restic -r "$disk_repo" init
+```
+
+Если репозиторий на SSD уже создан, начни отсюда. Введи ID проверенного облачного
+снимка, скопируй его и проверь содержимое SSD. Запиши новый ID из списка на SSD.
+
+```bash
+printf 'ID проверенного облачного снимка: '
+IFS= read -r snapshot_id
+restic -r "$disk_repo" copy --from-repo rclone:gdrive:backups/main-restic "$snapshot_id" &&
+  restic -r "$disk_repo" check --read-data &&
+  restic -r "$disk_repo" snapshots --tag main-only
+```
+
+На новой Fedora при необходимости выполни восстановление с этого SSD в шаге 4
+вместо облачной команды. Если Google Drive временно недоступен, в шаге 2
+установи инструменты и отложи авторизацию. Переходи к шагу 5 после успешной
+проверки и появления `~/Main`.
+
+```bash
+disk_repo="/run/media/$USER/BACKUP/main-restic"
+printf 'ID снимка на SSD: '
+IFS= read -r disk_snapshot_id
+disk_restore=$(mktemp -d "$HOME/Restored-Main-XXXXXXXX") &&
+  restic -r "$disk_repo" restore "${disk_snapshot_id}:/Main" --target "$disk_restore/Main" --sparse --overwrite never --verify &&
+  chmod 700 "$disk_restore/Main" &&
+  mv --update=none-fail --no-target-directory -- "$disk_restore/Main" "$HOME/Main"
+```
+
+Операция переноса остановится, если `~/Main` уже существует, а проверенная копия
+останется в папке `$disk_restore`. [Копирование снимков Restic](https://restic.readthedocs.io/en/stable/045_working_with_repos.html#copying-snapshots-between-repositories).
+
+</details>
+
+### Подготовить флешку и пройти установку
+
+1. Скачай **Fedora KDE Plasma Desktop 45, x86_64**. Открой **Verify** рядом с
+   образом и проверь подписанную контрольную сумму. Запиши образ на флешку
+   через Fedora Media Writer. [Загрузка и проверка Fedora KDE](https://fedoraproject.org/kde/download/).
+2. Загрузи Live KDE с флешки. Если в меню есть проверка носителя, выбери
+   **Test this media & start Fedora**. Проверь подключение к Wi‑Fi, экран, звук,
+   тачпад и клавиатуру до запуска установки. HDMI и сон перепроверь после
+   установки драйвера NVIDIA.
+3. В Anaconda сверь модель и размер SSD. Автоматическая разметка подходит,
+   когда весь выбранный SSD выделен под Fedora и бэкап проверен. Если сохраняешь
+   систему или данные на диске, проверь режим установки и список операций перед
+   подтверждением. На этом IdeaPad `/` и `/home` находятся в разных подтомах
+   одного Btrfs-раздела. Удаление этого раздела стирает оба подтома.
+   Список дисков и точек монтирования можно сверить через
+   `lsblk -o NAME,SIZE,MODEL,FSTYPE,MOUNTPOINTS`. Если включаешь шифрование диска
+   в Anaconda, сохрани пароль для разблокировки отдельно.
+   [Разметка и переустановка в Anaconda](https://fedoramagazine.org/anaconda-installer-redesign/).
+4. По завершении извлеки флешку, загрузи Fedora с внутреннего диска, подключись
+   к интернету и открой Konsole для шага 1.
 
 ## 1. Подготовить Fedora
 
@@ -76,10 +156,11 @@ restic --no-lock -r rclone:gdrive:backups/main-restic restore "${snapshot_id}:/M
 ```bash
 cat /etc/fedora-release
 uname -m
+getenforce
 dnf5 repo list --enabled
 ```
 
-Ожидаются Fedora 45 и `x86_64`. Исходные репозитории — `fedora`, `updates`,
+Ожидаются Fedora 45, `x86_64` и `Enforcing` для SELinux. Исходные репозитории — `fedora`, `updates`,
 `fedora-cisco-openh264`; `updates-testing` и Rawhide для этого сценария не нужны.
 Установи плагин управления репозиториями и закрепи отключённое состояние
 `updates-testing`, затем обнови систему:
@@ -200,7 +281,11 @@ flatpak update
 ### Кодеки и архиваторы
 
 ```bash
-sudo dnf5 install ffmpeg --allowerasing
+if rpm -q --quiet ffmpeg-free; then
+  sudo dnf5 swap ffmpeg-free ffmpeg --allowerasing
+else
+  sudo dnf5 install ffmpeg
+fi
 sudo dnf5 install -y gstreamer1-plugin-libav gstreamer1-plugins-bad-freeworld gstreamer1-plugins-ugly
 sudo dnf5 install -y 7zip unzip zip unrar
 ```
@@ -209,7 +294,7 @@ sudo dnf5 install -y 7zip unzip zip unrar
 а не только замену FFmpeg. Перед подтверждением просмотри всю транзакцию: удаление
 Plasma, рабочего окружения или посторонних нужных приложений — причина остановиться.
 В команде с `--allowerasing` автоматическое подтверждение `-y` отсутствует.
-[Справка DNF5](https://dnf5.readthedocs.io/en/latest/commands/install.8.html),
+[Замена пакета одной транзакцией в DNF5](https://dnf5.readthedocs.io/en/latest/commands/swap.8.html),
 [мультимедиа RPM Fusion](https://rpmfusion.org/Howto/Multimedia).
 
 ### Intel и NVIDIA
@@ -399,6 +484,23 @@ bash install.sh --dry-run && bash install.sh && bash install.sh --check
 доступом на запись. При старом bind-монтировании `~/Projects` есть отдельная
 [инструкция по однократной миграции](#переход-с-bind-монтирования-projects).
 
+### Проверить рабочее окружение
+
+После `CHECK PASSED` открой проект из `~/Projects`, проверь раскладки и сочетания
+клавиш. Проверь в новой Konsole браузер по умолчанию, подсветку Zsh и службы:
+
+```bash
+xdg-settings get default-web-browser
+zsh-patina check
+systemctl --failed --no-pager
+systemctl --user --failed --no-pager
+```
+
+Ожидаются `helium.desktop` и `Everything is OK` от Patina. Для каждой службы
+со статусом failed посмотри причину через `systemctl status ИМЯ` или
+`systemctl --user status ИМЯ`. Проверь сон и пробуждение на встроенном экране,
+затем подключение HDMI, если пользуешься внешним монитором.
+
 ## Что можно улучшить
 
 Предложения для этого ноутбука после базовой настройки. Каждое можно проверить отдельно.
@@ -571,6 +673,7 @@ python3 -B -m unittest discover -s tests
 | Команда | Действие |
 |---|---|
 | `bash install.sh --restore` | Восстановить и проверить Main с уже настроенным rclone. Затем отдельно запустить `bash install.sh` |
+| `bash install.sh --rehearse` | Восстановить снимок в отдельную папку и проверить источники всех ссылок |
 | `bash install.sh` | Скачать свежие зависимости и создать ссылки для восстановленной Main |
 | `bash install.sh --links-only` | Создать или исправить ссылки, без DNF и загрузок |
 | `bash install.sh --dry-run` | Показать план без сети и записи файлов |
@@ -612,16 +715,6 @@ bash install.sh
 После обновления открой новую Konsole. Если подсветка Patina перестала работать,
 проверь её командой `zsh-patina check` и перезапусти фоновый процесс через
 `zsh-patina restart`. [Руководство zsh-patina](https://github.com/michel-kraemer/zsh-patina#troubleshooting).
-
-Для пробного восстановления Main в отдельную папку:
-
-```bash
-python3 -B scripts/restore.py restore.json --configured
-```
-
-Результат появится в `~/Restored-Main-*/Main` после проверки Restic.
-Существующая `~/Main` сохранится; этот запуск не создаёт ссылки на тестовую копию.
-[Восстановление и проверка файлов Restic](https://restic.readthedocs.io/en/stable/050_restore.html).
 
 ## Настройки Plasma
 

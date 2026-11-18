@@ -79,6 +79,35 @@ def validate_ssh(directory):
             raise LinkError(f"Убери право записи группы и остальных: {item}")
 
 
+def source_entries(main, *, validate=True):
+    root = main / CONFIG_DIRECTORY
+    layout = CONFIG_FILES
+    legacy = not os.path.lexists(root) and os.path.lexists(main / LEGACY_DIRECTORY)
+    if legacy:
+        root = main / LEGACY_DIRECTORY
+        layout = {relative: relative for relative in CONFIGS}
+    entries = []
+    for relative in CONFIGS:
+        source = root / layout[relative]
+        if validate:
+            directory_chain(source.parent)
+            if source.is_symlink() or not source.is_file():
+                raise LinkError(f"Нет обычного конфига {source}. Сначала восстанови Main с настройками.")
+        entries.append((relative, source))
+    for relative, source in ((".ssh", root / ".ssh"), ("Projects", main / "Projects")):
+        # Older snapshots can predate one or both directory links.
+        if legacy and not os.path.lexists(source):
+            continue
+        if validate:
+            directory_chain(source)
+            if not source.is_dir():
+                raise LinkError(f"Нет каталога {source}. Восстанови его из Main.")
+            if relative == ".ssh":
+                validate_ssh(source)
+        entries.append((relative, source))
+    return entries
+
+
 def plan(home=None, main_root=None, sources=True):
     home = normal_home(home)
     config = user_directory(home, "XDG_CONFIG_HOME", ".config")
@@ -91,18 +120,14 @@ def plan(home=None, main_root=None, sources=True):
     if os.environ.get("STARSHIP_CONFIG", str(config / "starship.toml")) != str(config / "starship.toml"):
         raise LinkError("STARSHIP_CONFIG указывает на другой файл.")
     main = Path(main_root) if main_root is not None else home / "Main"
-    root = main / CONFIG_DIRECTORY
-    layout = CONFIG_FILES
-    if not os.path.lexists(root) and os.path.lexists(main / LEGACY_DIRECTORY):
-        root = main / LEGACY_DIRECTORY
-        layout = {relative: relative for relative in CONFIGS}
     entries = []
-    for relative in CONFIGS:
-        source = root / layout[relative]
-        if sources:
-            directory_chain(source.parent)
-            if source.is_symlink() or not source.is_file():
-                raise LinkError(f"Нет обычного конфига {source}. Сначала восстанови Main с настройками.")
+    for relative, source in source_entries(main, validate=sources):
+        if relative in (".ssh", "Projects"):
+            target = home / relative
+            if os.path.lexists(target) and not (target.is_symlink() or target.is_dir() or target.is_file()):
+                raise LinkError(f"Ожидался каталог, обычный файл или ссылка: {target}")
+            entries.append((source, target))
+            continue
         if relative == ".zshrc":
             target = zsh / ".zshrc"
         elif relative.startswith(".config/"):
@@ -112,19 +137,6 @@ def plan(home=None, main_root=None, sources=True):
         directory_chain(target.parent)
         if target.exists() and not target.is_file() and not target.is_symlink():
             raise LinkError(f"Ожидался файл или ссылка: {target}")
-        entries.append((source, target))
-    for source, target in ((root / ".ssh", home / ".ssh"), (main / "Projects", home / "Projects")):
-        # Older snapshots can predate one or both directory links.
-        if root == main / LEGACY_DIRECTORY and not os.path.lexists(source):
-            continue
-        if sources:
-            directory_chain(source)
-            if not source.is_dir():
-                raise LinkError(f"Нет каталога {source}. Восстанови его из Main.")
-            if target == home / ".ssh":
-                validate_ssh(source)
-        if os.path.lexists(target) and not (target.is_symlink() or target.is_dir() or target.is_file()):
-            raise LinkError(f"Ожидался каталог, обычный файл или ссылка: {target}")
         entries.append((source, target))
     return entries
 

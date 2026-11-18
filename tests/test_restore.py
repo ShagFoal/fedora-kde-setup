@@ -305,34 +305,55 @@ class NativeRestoreTests(unittest.TestCase):
                 # This would prevent linking the configs. Restoring Main works independently.
                 "STARSHIP_CONFIG": str(new_home / "custom-starship.toml"),
             }
-            master, slave = pty.openpty()
-            try:
-                os.write(master, b"\n")
-                result = subprocess.run(
-                    [sys.executable, "-B", str(ROOT / "scripts/restore.py"), str(ROOT / "restore.json"),
-                     "--configured", "--activate-main"],
-                    env=env, cwd=base, stdin=slave, stdout=slave, stderr=slave, timeout=45,
-                )
-                os.set_blocking(master, False)
-                output_chunks = []
+            def restore_in_terminal(mode):
+                master, slave = pty.openpty()
                 try:
-                    while chunk := os.read(master, 16384):
-                        output_chunks.append(chunk)
-                except BlockingIOError:
-                    pass
-                report = b"".join(output_chunks).decode()
-                self.assertEqual(result.returncode, 0, report)
-                self.assertIn("Main готов", report)
-                self.assertNotIn(phrase, report)
-            finally:
-                os.close(slave)
-                os.close(master)
+                    os.write(master, b"\n")
+                    result = subprocess.run(
+                        [sys.executable, "-B", str(ROOT / "scripts/restore.py"), str(ROOT / "restore.json"),
+                         "--configured", mode],
+                        env=env, cwd=base, stdin=slave, stdout=slave, stderr=slave, timeout=45,
+                    )
+                    os.set_blocking(master, False)
+                    output_chunks = []
+                    try:
+                        while chunk := os.read(master, 16384):
+                            output_chunks.append(chunk)
+                    except BlockingIOError:
+                        pass
+                    report = b"".join(output_chunks).decode()
+                    self.assertNotIn(phrase, report)
+                    return result.returncode, report
+                finally:
+                    os.close(slave)
+                    os.close(master)
+
+            returncode, report = restore_in_terminal("--activate-main")
+            self.assertEqual(returncode, 0, report)
+            self.assertIn("Main готов", report)
             self.assertEqual((new_home / "Main/Projects/notes.txt").read_text(), "project fixture")
             self.assertEqual((new_home / ".zshrc").read_text(), "original shell settings")
             for name in (".ssh", "Projects"):
                 self.assertFalse((new_home / name).is_symlink())
                 self.assertEqual(list((new_home / name).iterdir()), [])
             self.assertFalse(any(new_home.glob("Restored-Main-*")))
+
+            # Rehearsal checks the restored settings while the active Main
+            # already exists and contains different data.
+            (new_home / "Main/Projects/notes.txt").write_text("live project")
+            (new_home / "Main" / links.CONFIG_DIRECTORY / "mpv/mpv.conf").unlink()
+            returncode, report = restore_in_terminal("--rehearse")
+            self.assertEqual(returncode, 0, report)
+            self.assertIn("REHEARSAL PASSED", report)
+            copies = list(new_home.glob("Restored-Main-*/Main/Projects/notes.txt"))
+            self.assertEqual(len(copies), 1)
+            self.assertEqual(copies[0].read_text(), "project fixture")
+            self.assertEqual((new_home / "Main/Projects/notes.txt").read_text(), "live project")
+            self.assertFalse((new_home / "Main" / links.CONFIG_DIRECTORY / "mpv/mpv.conf").exists())
+            self.assertEqual((new_home / ".zshrc").read_text(), "original shell settings")
+            self.assertFalse((new_home / ".ssh").is_symlink())
+            self.assertFalse((new_home / "Projects").is_symlink())
+
             self.assertEqual(account.read_text(), account_contents)
             self.assertEqual(account.stat().st_mode & 0o777, 0o600)
             self.assertEqual(phrase_path.read_text(), phrase + "\n")

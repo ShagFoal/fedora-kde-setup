@@ -221,7 +221,9 @@ def main():
     parser = argparse.ArgumentParser(description="Восстановление Main из существующего репозитория Restic.", allow_abbrev=False)
     parser.add_argument("profile", metavar="restore.json")
     parser.add_argument("--configured", action="store_true", help="использовать сохранённый rclone.conf и настроенный пароль Restic")
-    parser.add_argument("--activate-main", action="store_true", help="переместить проверенную копию в свободную ~/Main")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--activate-main", action="store_true", help="переместить проверенную копию в свободную ~/Main")
+    mode.add_argument("--rehearse", action="store_true", help="проверить источники ссылок в отдельной восстановленной копии")
     args = parser.parse_args()
     if os.geteuid() == 0 or not sys.stdin.isatty() or not sys.stdout.isatty():
         raise RestoreError("Запусти восстановление от обычного пользователя в интерактивном терминале.")
@@ -235,6 +237,16 @@ def main():
         except (LinkError, OSError) as error:
             raise RestoreError(f"Main оставлен отдельно в {target}: {error}") from None
         print(f"Main готов: {target}. Следующий этап — создание ссылок.")
+    elif args.rehearse:
+        from links import LinkError, source_entries
+        try:
+            entries = source_entries(target)
+            missing = {".ssh", "Projects"} - {destination for destination, _ in entries}
+            if missing:
+                raise LinkError("В старой раскладке отсутствуют источники ссылок для " + ", ".join(sorted(missing)) + ".")
+        except (LinkError, OSError) as error:
+            raise RestoreError(f"Проверка настроек не прошла. Восстановленная копия доступна в {target}. {error}") from None
+        print(f"REHEARSAL PASSED. Проверено {len(entries)} источников ссылок. Копия Main в {target}.")
 
 
 if __name__ == "__main__":
