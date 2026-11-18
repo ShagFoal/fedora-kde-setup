@@ -1,284 +1,47 @@
-# Первоначальная настройка Fedora 45 KDE
+# Fedora 45 KDE
 
-Личный гайд для Lenovo IdeaPad Gaming 3 15IAH7 с Intel Iris Xe, NVIDIA RTX 3050 Ti Mobile
-и 16 ГБ RAM. Система — Fedora 45 KDE Plasma Desktop, x86_64, Wayland и DNF5.
-В GitHub хранятся эта инструкция и установщик. Личные файлы, ключи SSH и конфиги
-восстанавливаются из снимка `Main` в Google Drive.
+Чистая установка на Lenovo IdeaPad Gaming 3 15IAH7, с Intel Iris Xe и RTX 3050 Ti.
+Публичный репозиторий содержит гайд и установщик. Личные конфиги, SSH и проекты возвращаются из снимка `Main`.
 
-| Шаг | Что должно получиться |
-|---|---|
-| [До установки](#перед-переустановкой) | Свежий снимок проверен, Live USB загружается, диск для установки выбран |
-| [1. Подготовить Fedora](#1-подготовить-fedora) | Обновлённая система, RPM Fusion, рабочие драйверы и кодеки |
-| [2. Настроить Restic и rclone](#2-настроить-restic-и-rclone) | Сохранённое подключение `gdrive` видит снимки с тегом `main-only` |
-| [3. Установить браузер](#3-установить-браузер) | Helium установлен и открывает ссылки из KDE |
-| [4. Восстановить Main](#4-восстановить-main) | `bash install.sh --restore` возвращает проверенные файлы в `~/Main` и завершается |
-| [5. Применить настройки](#5-применить-настройки) | Отдельный `bash install.sh` устанавливает зависимости и подключает 11 ссылок |
+## До переустановки
 
-Если `~/Main` сохранился после установки, выполни шаги 1–3 и склонируй
-репозиторий в шаге 4. Пропусти только команду `bash install.sh --restore`, затем
-примени настройки в шаге 5. После перезагрузок возвращайся в этот README в GitHub.
-Предложения по автономности, видео и рабочим столам собраны в разделе
-[«Что можно улучшить»](#что-можно-улучшить). Гайд сверен 18 ноября 2026 года.
-
-## Перед переустановкой
-
-### Сделать снимок и отрепетировать восстановление
-
-Проверь с другого устройства доступ к GitHub и Google Drive, включая
-двухфакторный вход, и убедись, что можешь получить пароль Restic и данные
-своего OAuth-клиента. Храни их вне стираемого диска и Git-репозитория.
-
-Сделай свежий снимок на действующей Fedora. `backup-main` охватывает `~/Main`
-с проектами, ключами SSH и конфигами. Из него исключены каталоги
-`node_modules`, `__pycache__`, `target`, `.next` и `dist`. Нужные файлы за
-пределами `Main`, включая профили приложений, сохрани отдельно.
+1. Проверь с другого устройства вход в Google Drive. Сохрани пароль Restic и данные OAuth вне диска, который будешь стирать.
+2. Сделай свежий снимок и проверь восстановление. Для репетиции нужно место под вторую копию `Main`.
 
 ```bash
-"$HOME/Main/System/Scripts/backup-main"
+"$HOME/Main/System/Scripts/backup-main" &&
+  cd "$HOME/Main/System/Setup" &&
+  bash install.sh --rehearse
 ```
 
-Из актуальной копии этого репозитория выполни проверку перед форматированием:
+Выбери свежий снимок и дождись `REHEARSAL PASSED`. Открой важный проект из `~/Restored-Main-*/Main` и запиши ID снимка. Сохрани отдельно нужные файлы за пределами `Main`. Для запасной копии на SSD смотри [шаг 3](#3-восстановить-main). [Проверка файлов в Restic](https://restic.readthedocs.io/en/stable/050_restore.html).
 
-```bash
-bash install.sh --rehearse
-```
+3. Скачай Fedora 45 KDE x86_64, проверь образ через **Verify** и запиши флешку через Fedora Media Writer. В Live KDE проверь Wi-Fi, звук и тачпад. В установщике сверь модель и размер SSD. На этом ноутбуке `/` и `/home` находятся на одном Btrfs-разделе. Удаление раздела стирает оба подтома. [Загрузка Fedora KDE](https://fedoraproject.org/kde/download/).
 
-Выбери только что созданный снимок по дате и ID. Restic восстановит его
-в приватную папку `~/Restored-Main-*/Main` и проверит файлы через `--verify`.
-`REHEARSAL PASSED` означает, что проверены также все 11 источников ссылок,
-включая `Projects` и права `.ssh`. Открой важный файл проекта из этой копии
-и запиши ID снимка. Репетиция требует свободного места для второй копии.
-Держи основной бэкап на отдельном носителе или в Google Drive.
-На время чтения снимка отложи `restic prune` и `restic forget --prune`.
-[Проверка восстановленных файлов](https://restic.readthedocs.io/en/stable/050_restore.html).
+## 1. Обновить Fedora и подключить RPM Fusion
 
-<details>
-<summary>Быстрая проверка одного файла, если нет места для полной копии</summary>
-
-Выведи список снимков и возьми ID свежего снимка:
-
-```bash
-restic --no-lock -r rclone:gdrive:backups/main-restic snapshots --tag main-only --latest 1
-```
-
-Следующий блок вернёт `zshrc` в отдельную временную папку и сравнит его с оригиналом:
-
-```bash
-printf 'ID снимка: '
-IFS= read -r snapshot_id
-sample_dir=$(mktemp -d)
-restic --no-lock -r rclone:gdrive:backups/main-restic restore "${snapshot_id}:/Main" \
-  --include '/System/Configs/zsh/zshrc' --target "$sample_dir" --verify &&
-  cmp -- "$HOME/Main/System/Configs/zsh/zshrc" "$sample_dir/System/Configs/zsh/zshrc" &&
-  printf 'Файл из снимка совпадает с текущим.\n'
-```
-
-Повтори для важного файла проекта, указав его путь относительно `Main`.
-При ошибке проверь выбранный снимок и доступ к хранилищу до форматирования.
-
-</details>
-
-<details>
-<summary>Запасной путь для Main через внешний SSD</summary>
-
-В Dolphin открой смонтированный SSD. Укажи путь к папке для Restic на нём,
-заменив `BACKUP` на метку диска. В выводе `findmnt` должен быть виден внешний SSD.
-Для нового репозитория задай отдельный пароль и сохрани его вместе с данными доступа.
-
-```bash
-disk_repo="/run/media/$USER/BACKUP/main-restic"
-findmnt --target "$(dirname "$disk_repo")"
-```
-
-```bash
-restic -r "$disk_repo" init
-```
-
-Если репозиторий на SSD уже создан, начни отсюда. Введи ID проверенного облачного
-снимка, скопируй его и проверь содержимое SSD. Запиши новый ID из списка на SSD.
-
-```bash
-printf 'ID проверенного облачного снимка: '
-IFS= read -r snapshot_id
-restic -r "$disk_repo" copy --from-repo rclone:gdrive:backups/main-restic "$snapshot_id" &&
-  restic -r "$disk_repo" check --read-data &&
-  restic -r "$disk_repo" snapshots --tag main-only
-```
-
-На новой Fedora при необходимости выполни восстановление с этого SSD в шаге 4
-вместо облачной команды. Если Google Drive временно недоступен, в шаге 2
-установи инструменты и отложи авторизацию. Переходи к шагу 5 после успешной
-проверки и появления `~/Main`.
-
-```bash
-disk_repo="/run/media/$USER/BACKUP/main-restic"
-printf 'ID снимка на SSD: '
-IFS= read -r disk_snapshot_id
-disk_restore=$(mktemp -d "$HOME/Restored-Main-XXXXXXXX") &&
-  restic -r "$disk_repo" restore "${disk_snapshot_id}:/Main" --target "$disk_restore/Main" --sparse --overwrite never --verify &&
-  chmod 700 "$disk_restore/Main" &&
-  mv --update=none-fail --no-target-directory -- "$disk_restore/Main" "$HOME/Main"
-```
-
-Операция переноса остановится, если `~/Main` уже существует, а проверенная копия
-останется в папке `$disk_restore`. [Копирование снимков Restic](https://restic.readthedocs.io/en/stable/045_working_with_repos.html#copying-snapshots-between-repositories).
-
-</details>
-
-### Подготовить флешку и пройти установку
-
-1. Скачай **Fedora KDE Plasma Desktop 45, x86_64**. Открой **Verify** рядом с
-   образом и проверь подписанную контрольную сумму. Запиши образ на флешку
-   через Fedora Media Writer. [Загрузка и проверка Fedora KDE](https://fedoraproject.org/kde/download/).
-2. Загрузи Live KDE с флешки. Если в меню есть проверка носителя, выбери
-   **Test this media & start Fedora**. Проверь подключение к Wi‑Fi, экран, звук,
-   тачпад и клавиатуру до запуска установки. HDMI и сон перепроверь после
-   установки драйвера NVIDIA.
-3. В Anaconda сверь модель и размер SSD. Автоматическая разметка подходит,
-   когда весь выбранный SSD выделен под Fedora и бэкап проверен. Если сохраняешь
-   систему или данные на диске, проверь режим установки и список операций перед
-   подтверждением. На этом IdeaPad `/` и `/home` находятся в разных подтомах
-   одного Btrfs-раздела. Удаление этого раздела стирает оба подтома.
-   Список дисков и точек монтирования можно сверить через
-   `lsblk -o NAME,SIZE,MODEL,FSTYPE,MOUNTPOINTS`. Если включаешь шифрование диска
-   в Anaconda, сохрани пароль для разблокировки отдельно.
-   [Разметка и переустановка в Anaconda](https://fedoramagazine.org/anaconda-installer-redesign/).
-4. По завершении извлеки флешку, загрузи Fedora с внутреннего диска, подключись
-   к интернету и открой Konsole для шага 1.
-
-## 1. Подготовить Fedora
-
-Выполняй блоки по порядку в Konsole. При ошибке остановись на текущем шаге;
-закрой Discover на время операций DNF.
-
-### Проверка версии и обновление
+Открой Konsole. Переходи к следующей команде после успешного завершения текущей.
 
 ```bash
 cat /etc/fedora-release
-uname -m
-getenforce
-dnf5 repo list --enabled
-```
-
-Ожидаются Fedora 45, `x86_64` и `Enforcing` для SELinux. Исходные репозитории — `fedora`, `updates`,
-`fedora-cisco-openh264`; `updates-testing` и Rawhide для этого сценария не нужны.
-Установи плагин управления репозиториями и закрепи отключённое состояние
-`updates-testing`, затем обнови систему:
-
-```bash
-sudo dnf5 install -y dnf5-plugins
+sudo dnf5 install dnf5-plugins
 sudo dnf5 config-manager setopt updates-testing.enabled=0
 sudo dnf5 upgrade --refresh
 ```
 
-Если хочешь вернуть личный профиль zram, задай его ниже до первой перезагрузки.
-Если оставляешь настройки Fedora по умолчанию, перезагрузи ноутбук после обновления
-и переходи к RPM Fusion. Драйвер NVIDIA дальше собирается для загруженного ядра.
-
-### Zram и zstd
-
-На этом ноутбуке используется профиль `zram-size = ram` и `zstd`.
-При 16 ГБ установленной RAM он даёт примерно 16 ГБ логического swap; точное значение
-зависит от `MemTotal`. В штатном конфиге Fedora 45 размер ограничен выражением
-`min(ram, 8192)` — до 8 ГиБ. Здесь явно восстанавливается личная настройка ноутбука.
-
-Размер zram не резервирует столько же физической памяти сразу: RAM расходуется
-по мере заполнения сжатыми данными. Это не дополнительные физические 16 ГБ.
-Сжатие выполняет ядро; устанавливать утилиту `zstd` ради него не требуется.
-
-Проверь наличие пакетов и существующие настройки:
-
-```bash
-sudo dnf5 install -y zram-generator zram-generator-defaults
-systemd-analyze cat-config systemd/zram-generator.conf
-```
-
-На чистой системе создай отдельное локальное дополнение. Если файл с таким именем
-уже есть и отличается по содержимому, сначала сохрани его копию вне каталога `.conf.d`.
-
-```bash
-sudo install -d -m 0755 /etc/systemd/zram-generator.conf.d
-sudo tee /etc/systemd/zram-generator.conf.d/90-local-zstd.conf > /dev/null <<'EOF'
-[zram0]
-zram-size = ram
-compression-algorithm = zstd
-EOF
-
-systemd-analyze cat-config systemd/zram-generator.conf
-```
-
-Дополнение имеет приоритет над основным конфигом. Проверь, что другой, более поздний
-по имени `.conf` не задаёт противоположные значения. Применение — через перезагрузку:
-перезапуск активного zram требует вывода swap из работы и под нагрузкой может
-потребовать больше свободной RAM.
-
-Когда в выводе видны выбранные параметры, выполни `sudo reboot`. После входа
-снова открой Konsole и проверь:
-
-```bash
-zramctl
-cat /sys/block/zram0/comp_algorithm
-swapon --show
-```
-
-Проверка успешна, если у `zram0` алгоритм `zstd`, в `comp_algorithm` выбран `[zstd]`,
-а `/dev/zram0` присутствует в списке swap с размером около доступной RAM.
-Колонки `DATA`, `COMPR`, `TOTAL` в `zramctl` показывают использование, а не заданный
-логический размер. При ошибке смотри журнал служб zram за текущую загрузку:
-
-```bash
-journalctl -b -u 'systemd-zram-setup@*.service'
-```
-
-<details>
-<summary>Откат личного профиля zram при необходимости</summary>
-
-```bash
-sudo rm /etc/systemd/zram-generator.conf.d/90-local-zstd.conf
-sudo reboot
-```
-
-</details>
-
-Другие локальные конфиги при этом продолжат действовать. Параметры `swappiness`,
-writeback и уровень сжатия в этом профиле отдельно не переопределяются.
-[Параметры zram-generator](https://github.com/systemd/zram-generator/blob/main/man/zram-generator.conf.md),
-[проверка алгоритма и статистики](https://docs.kernel.org/admin-guide/blockdev/zram.html).
-
-### RPM Fusion
+Перезагрузи ноутбук для загрузки нового ядра. Подключи RPM Fusion и стабильные обновления. [RPM Fusion](https://rpmfusion.org/Configuration).
 
 ```bash
 sudo dnf5 install \
-  https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm \
-  https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm
-
-sudo dnf5 install -y rpmfusion-free-appstream-data rpmfusion-nonfree-appstream-data
+  "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm" \
+  "https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm"
 sudo dnf5 config-manager setopt \
   rpmfusion-free-updates-testing.enabled=0 \
   rpmfusion-nonfree-updates-testing.enabled=0
-dnf5 repo list --enabled
+sudo dnf5 install rpmfusion-free-appstream-data rpmfusion-nonfree-appstream-data
 ```
 
-Нужны стабильные Free/Nonfree и их обычные updates. Не переноси старые `.repo`
-и включённые testing из beta. Если stable-пакеты временно не согласованы по версиям,
-остановись и дождись обновления репозиториев; не включай testing для обхода конфликта.
-Проверку подписей пакетов оставь включённой.
-[Пример подключения RPM Fusion в Fedora Magazine](https://fedoramagazine.org/migration-guide-from-windows-to-fedora-linux/),
-[настройки репозиториев DNF5](https://dnf5.readthedocs.io/en/latest/dnf5_plugins/config-manager.8.html).
-
-### Flathub
-
-```bash
-flatpak remote-add --system --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-flatpak remote-modify --system --no-filter --enable flathub
-flatpak remotes --show-details
-flatpak update
-```
-
-В выводе `flatpak remotes --show-details` проверь, что системный `flathub`
-включён и указывает на Flathub. [Инструкция Flathub для Fedora](https://flathub.org/en/setup/Fedora).
-
-### Кодеки и архиваторы
+Проверь транзакцию замены FFmpeg перед подтверждением. Если DNF предлагает удалить Plasma или нужные приложения, отмени её. [Кодеки RPM Fusion](https://rpmfusion.org/Howto/Multimedia).
 
 ```bash
 if rpm -q --quiet ffmpeg-free; then
@@ -286,444 +49,143 @@ if rpm -q --quiet ffmpeg-free; then
 else
   sudo dnf5 install ffmpeg
 fi
-sudo dnf5 install -y gstreamer1-plugin-libav gstreamer1-plugins-bad-freeworld gstreamer1-plugins-ugly
-sudo dnf5 install -y 7zip unzip zip unrar
+sudo dnf5 install gstreamer1-plugin-libav gstreamer1-plugins-bad-freeworld gstreamer1-plugins-ugly
 ```
-
-`--allowerasing` разрешает удаление установленных пакетов для разрешения зависимостей,
-а не только замену FFmpeg. Перед подтверждением просмотри всю транзакцию: удаление
-Plasma, рабочего окружения или посторонних нужных приложений — причина остановиться.
-В команде с `--allowerasing` автоматическое подтверждение `-y` отсутствует.
-[Замена пакета одной транзакцией в DNF5](https://dnf5.readthedocs.io/en/latest/commands/swap.8.html),
-[мультимедиа RPM Fusion](https://rpmfusion.org/Howto/Multimedia).
 
 ### Intel и NVIDIA
 
-Проверь Secure Boot перед установкой драйвера:
-
 ```bash
-sudo dnf5 install -y mokutil
+sudo dnf5 install mokutil
 mokutil --sb-state
 ```
 
-Если вывод — `SecureBoot disabled`, переходи к установке драйвера ниже.
-
 <details>
-<summary>Если включён Secure Boot — зарегистрировать ключ для модуля NVIDIA</summary>
-
-Установи инструменты и создай ключ, если у akmods ещё нет сертификата:
+<summary>Если Secure Boot включён, зарегистрируй ключ akmods перед установкой NVIDIA</summary>
 
 ```bash
-sudo dnf5 install akmods mokutil
+sudo dnf5 install akmods
 if ! sudo test -f /etc/pki/akmods/certs/public_key.der; then
   sudo kmodgenca -a
 fi
 mokutil --test-key /etc/pki/akmods/certs/public_key.der
 ```
 
-Если ключ уже зарегистрирован, переходи к установке драйвера. Если ещё не
-зарегистрирован, выполни `sudo mokutil --import /etc/pki/akmods/certs/public_key.der`,
-задай одноразовый пароль и выполни `sudo reboot`. При следующей загрузке выбери
-**Enroll MOK → Continue → Yes**, введи этот пароль (раскладка US) и выбери **Reboot**.
-После входа снова выполни `mokutil --test-key /etc/pki/akmods/certs/public_key.der`.
-Продолжай после сообщения, что ключ зарегистрирован. На ноутбуке полная инструкция
-пакета лежит в `/usr/share/doc/akmods/README.secureboot`.
-[Руководство RPM Fusion для Secure Boot](https://rpmfusion.org/Howto/Secure%20Boot).
+Если ключ ещё не зарегистрирован, выполни `sudo mokutil --import /etc/pki/akmods/certs/public_key.der`. Задай одноразовый пароль и перезагрузи ноутбук. Выбери **Enroll MOK → Continue → Yes**, введи пароль и выбери **Reboot**. Повтори `mokutil --test-key /etc/pki/akmods/certs/public_key.der`. [Secure Boot и akmods](https://rpmfusion.org/Howto/Secure%20Boot).
 
 </details>
 
 ```bash
-sudo dnf5 install -y intel-media-driver libva-utils
-sudo dnf5 install -y "kernel-devel-$(uname -r)" akmod-nvidia xorg-x11-drv-nvidia-cuda
-```
-
-Для Iris Xe нужен современный Intel media-driver. Legacy `libva-intel-driver`
-и AMD-пакеты в этот набор не входят. `xorg-x11-drv-nvidia-cuda` даёт, в частности,
-`nvidia-smi`; полный CUDA Toolkit для этой проверки не устанавливается.
-
-Модуль NVIDIA может собираться в фоне. Запусти сборку для загруженного ядра
-и дождись окончания; на первую сборку заложи 5–10 минут:
-
-```bash
+sudo dnf5 install intel-media-driver libva-utils
+sudo dnf5 install "kernel-devel-$(uname -r)" akmod-nvidia xorg-x11-drv-nvidia-cuda
 sudo akmods --force --kernels "$(uname -r)"
 rpm -q --qf '%{VERSION}\n' akmod-nvidia
 modinfo -k "$(uname -r)" -F version nvidia
 ```
 
-Обе версии должны совпасть. При ошибке сборки, отсутствии модуля или несовпадении
-версий остановись до перезагрузки. Журнал сборки: `/var/cache/akmods/nvidia/.last.log`.
-При успешной проверке:
-
-```bash
-sudo reboot
-```
-
-После загрузки снова открой Konsole и проверь драйвер и декодирование:
-
-```bash
-nvidia-smi
-vainfo
-```
-
-`nvidia-smi` должен показать RTX 3050 Ti и версию драйвера. Для обычного видео
-на встроенной Intel `vainfo` должен показывать Intel iHD и поддерживаемые профили,
-включая H.264/HEVC. Если выбран другой GPU, сначала уточни устройство, которое
-проверяет VA-API. Сам успешный `vainfo` ещё не доказывает ускорение в приложении.
-
-После установки браузера в шаге 3 проверь сведения GPU и декодер воспроизводимого видео
-в Helium через `chrome://gpu` и `chrome://media-internals`.
-Конкретное приложение запускай на дискретной GPU через доступное в Plasma действие
-«Запустить с дискретной видеокартой». При использовании HDMI отдельно проверь
-внешний монитор. Не задавай NVIDIA-переменные выбора GPU глобально для всей сессии.
-[Установка NVIDIA](https://rpmfusion.org/Howto/NVIDIA).
-
-### Проверка прошивок
-
-Перед подключением личных данных проверь, какие устройства ноутбука поддерживает
-LVFS и предлагает ли производитель обновления:
-
-```bash
-fwupdmgr get-devices
-fwupdmgr refresh
-fwupdmgr get-updates
-```
-
-Если обновление доступно, открой его описание в KDE Discover. Для установки
-подключи питание и следуй инструкциям производителя о перезагрузке.
-[Справка fwupdmgr и KDE Discover](https://fwupd.github.io/libfwupdplugin/fwupdmgr.html).
+Дождись сборки и сравни две версии. Если они совпадают, перезагрузи ноутбук. Проверь `nvidia-smi` для RTX 3050 Ti и `vainfo` для Intel iHD. При ошибке сборки смотри `/var/cache/akmods/nvidia/.last.log`. [Драйвер NVIDIA из RPM Fusion](https://rpmfusion.org/Howto/NVIDIA).
 
 ## 2. Настроить Restic и rclone
 
-В Konsole установи инструменты для доступа к резервной копии и GitHub:
-
 ```bash
-sudo dnf5 install restic rclone git gh python3
+sudo dnf5 install git python3 restic rclone
+rclone config
 ```
 
-Если подключение `gdrive` уже настроено, сразу переходи к проверке снимка. Для
-первого входа выполни `rclone config` и ответь на запросы:
+Если `gdrive` уже настроен, сразу проверь снимок. Для нового подключения выбери следующие параметры. [Google Drive в rclone](https://rclone.org/drive/).
 
-| Запрос | Что выбрать для личного Google Drive |
+| Запрос rclone | Ответ |
 |---|---|
 | New remote / name / storage | `n` → `gdrive` → `drive` |
-| Client ID / Client Secret | Ввести свои значения OAuth. Если своего клиента нет, Enter в обоих полях использует клиент rclone |
-| Scope | `drive` для восстановления и будущих бэкапов. Для одного восстановления подходит `drive.readonly` |
-| Service account file / advanced config | Оставить путь пустым и выбрать `n` |
-| Web browser for authentication | `y`. В штатном браузере войти в аккаунт, где лежит бэкап, и разрешить доступ |
-| Shared Drive / keep this remote / выход | Для личного диска `n`, затем `y` и `q` |
-
-Если браузер не открылся автоматически, открой локальный адрес, который напечатал
-rclone в Konsole. [Инструкция rclone для Google Drive](https://rclone.org/drive/), [вход с другого устройства](https://rclone.org/remote_setup/).
-
-Restic открывает существующий зашифрованный репозиторий по его паролю. Проверь доступ и дату снимка:
+| Client ID / Client Secret | Свой OAuth-клиент или Enter в обоих полях для клиента rclone |
+| Scope | `drive` для восстановления и следующих бэкапов |
+| Service account / advanced config | Enter → `n` |
+| Авторизация | `y`, вход в аккаунт с бэкапом |
+| Shared Drive / сохранить / выйти | `n` → `y` → `q` |
 
 ```bash
 rclone listremotes
 restic --no-lock -r rclone:gdrive:backups/main-restic snapshots --tag main-only --latest 1
 ```
 
-Первая команда должна показать `gdrive:`, вторая — дату и ID снимка `Main`. Убедись, что это нужный бэкап. Храни пароль репозитория отдельно от стираемого диска. Для собственного OAuth-клиента Google Drive нужен тип **Desktop app** и включённый Drive API. У внешнего приложения в статусе **Testing** refresh token для доступа к Drive обычно истекает через семь дней. Для постоянного подключения настрой **In production** и при необходимости выполни `rclone config reconnect gdrive:`. [OAuth в rclone](https://rclone.org/drive/#making-your-own-client-id), [срок действия токенов Google](https://developers.google.com/identity/protocols/oauth2#expiration).
+Введи пароль существующего репозитория Restic. Сверь `gdrive:` и ID снимка. Для собственного OAuth-клиента в статусе **Testing** может потребоваться `rclone config reconnect gdrive:`. [Срок действия токенов Google](https://developers.google.com/identity/protocols/oauth2#expiration).
 
-## 3. Установить браузер
+## 3. Восстановить Main
 
-В текущем профиле KDE браузером по умолчанию выбран **Helium**. Проект публикует для Fedora пакет `helium-bin` в COPR `imput/helium`. [Инструкция Helium для Fedora](https://github.com/imputnet/helium-linux#fedora).
-
-```bash
-sudo dnf5 copr enable imput/helium
-sudo dnf5 install helium-bin
-xdg-settings set default-web-browser helium.desktop
-xdg-settings get default-web-browser
-```
-
-Ожидаемый вывод — `helium.desktop`. Открой Helium из меню Plasma. Теперь им можно пользоваться, в том числе для входа в GitHub на следующем шаге.
-
-## 4. Восстановить Main
-
-Склонируй эту версию установщика **вне** `~/Main`, чтобы получить код восстановления до загрузки личных файлов. Для доступа к закрытому GitHub-репозиторию используй вход через браузер:
+Клонируй публичный репозиторий вне `~/Main`.
 
 ```bash
-gh auth login --hostname github.com --git-protocol https --web
-gh auth setup-git --hostname github.com
 mkdir -p "$HOME/Downloads"
-gh repo clone ShagFoal/fedora-kde-setup "$HOME/Downloads/fedora-kde-setup"
+git clone https://github.com/ShagFoal/fedora-kde-setup.git "$HOME/Downloads/fedora-kde-setup"
+cd "$HOME/Downloads/fedora-kde-setup"
 ```
 
-Если `~/Main` уже на месте, переходи к шагу 5. Для восстановления из снимка выполни:
+Если `~/Main` сохранился, переходи к шагу 4. Иначе запусти восстановление, выбери проверенный снимок по ID и дождись появления `~/Main`. Открой знакомый файл в `~/Main/Projects`.
 
 ```bash
-cd "$HOME/Downloads/fedora-kde-setup"
 bash install.sh --restore
 ```
 
-Выбери снимок по записанному до переустановки ID или по дате. Enter выбирает самый свежий подходящий снимок.
-Скрипт использует `gdrive` из шага 2, восстанавливает во временный каталог в домашней папке
-и проверяет результат через Restic `--verify`. После проверки он переносит данные
-на свободное место `~/Main` и завершается. При сбое во время загрузки в выводе будет
-путь к частично восстановленным файлам. [Восстановление Restic](https://restic.readthedocs.io/en/stable/050_restore.html).
+<details>
+<summary>Запасная копия на внешнем SSD</summary>
 
-Проверь, что открываются знакомые файлы в `~/Main/Projects`. На этом этапе конфиги
-ещё лежат внутри `~/Main/System/Configs`.
+До переустановки замени `BACKUP` на метку смонтированного SSD. В выводе `findmnt` проверь, что это внешний диск.
 
-## 5. Применить настройки
+```bash
+disk_repo="/run/media/$USER/BACKUP/main-restic"
+findmnt --target "$(dirname "$disk_repo")"
+```
 
-Закрой Dolphin. В Konsole из **того же клона** выполни:
+Для нового репозитория выполни `restic -r "$disk_repo" init` и сохрани его пароль. Подставь проверенный ID облачного снимка.
+
+```bash
+restic -r "$disk_repo" copy --from-repo rclone:gdrive:backups/main-restic SNAPSHOT_ID &&
+  restic -r "$disk_repo" check --read-data &&
+  restic -r "$disk_repo" snapshots --tag main-only
+```
+
+Если восстанавливаешься с SSD, установи инструменты из шага 2 и запусти этот блок вместо `--restore`. Подставь ID из списка на SSD.
+
+```bash
+disk_repo="/run/media/$USER/BACKUP/main-restic"
+disk_restore=$(mktemp -d "$HOME/Restored-Main-XXXXXXXX") &&
+  restic -r "$disk_repo" restore "SSD_SNAPSHOT_ID:/Main" --target "$disk_restore/Main" --sparse --overwrite never --verify &&
+  chmod 700 "$disk_restore/Main" &&
+  mv --update=none-fail --no-target-directory -- "$disk_restore/Main" "$HOME/Main"
+```
+
+Если `~/Main` уже существует, проверенная копия останется в `$disk_restore`. [Копирование снимков Restic](https://restic.readthedocs.io/en/stable/045_working_with_repos.html#copying-snapshots-between-repositories).
+
+</details>
+
+## 4. Применить настройки
+
+Закрой Dolphin. В Konsole выполни следующие команды и дождись `CHECK PASSED`.
 
 ```bash
 cd "$HOME/Downloads/fedora-kde-setup"
-bash install.sh --dry-run && bash install.sh && bash install.sh --check
+bash install.sh && bash install.sh --check
+readlink "$HOME/.ssh" "$HOME/Projects"
 ```
 
-Если используешь сохранённую копию актуального репозитория в `~/Main/System/Setup`,
-выполни эти команды оттуда. Ожидаемый итог — `CHECK PASSED`. Установщик проверяет
-обязательные RPM, загруженные файлы и синтаксис Zsh. Девять файлов настроек
-подключаются к Zsh, Starship, Konsole, Fastfetch, Dolphin и MPV. Ещё две ссылки ведут
-из `~/.ssh` в `~/Main/System/Configs/.ssh` и из `~/Projects` в `~/Main/Projects`.
+Обе символьные ссылки должны вести в `~/Main`, соответственно в `System/Configs/.ssh` и `Projects`. Установщик подключает также Zsh, Starship, Konsole, Fastfetch, Dolphin и MPV. Заменённые файлы сохраняются по пути, который он выводит. Открой новую Konsole и запусти `fastfetch`.
 
-Открой новую Konsole и Dolphin. Дополни [настройки Plasma](#настройки-plasma) ниже.
-Для следующей резервной копии используй `"$HOME/Main/System/Scripts/backup-main"` с настроенным в шаге 2
-доступом на запись. При старом bind-монтировании `~/Projects` есть отдельная
-[инструкция по однократной миграции](#переход-с-bind-монтирования-projects).
-
-### Проверить рабочее окружение
-
-После `CHECK PASSED` открой проект из `~/Projects`, проверь раскладки и сочетания
-клавиш. Проверь в новой Konsole браузер по умолчанию, подсветку Zsh и службы:
-
-```bash
-xdg-settings get default-web-browser
-zsh-patina check
-systemctl --failed --no-pager
-systemctl --user --failed --no-pager
-```
-
-Ожидаются `helium.desktop` и `Everything is OK` от Patina. Для каждой службы
-со статусом failed посмотри причину через `systemctl status ИМЯ` или
-`systemctl --user status ИМЯ`. Проверь сон и пробуждение на встроенном экране,
-затем подключение HDMI, если пользуешься внешним монитором.
-
-## Что можно улучшить
-
-Предложения для этого ноутбука после базовой настройки. Каждое можно проверить отдельно.
-
-**1. Автономность без внешнего монитора.** Встроенный экран этого IdeaPad подключён к Intel,
-а HDMI — к RTX. Для проверки отключи питание и HDMI, закрой приложения на RTX
-и дождись простоя. Значение `suspended` в первой команде означает, что дискретная
-карта уснула. Если она остаётся `active`, вторая команда покажет поддержку режима
-Runtime D3 драйвером. [Руководство NVIDIA по питанию](https://download.nvidia.com/XFree86/Linux-x86_64/620.70.06/README/dynamicpowermanagement.html).
-
-```bash
-cat /sys/bus/pci/devices/0000:01:00.0/power/runtime_status
-cat /proc/driver/nvidia/gpus/0000:01:00.0/power
-```
-
-**2. Профили питания и ресурс батареи.** Если важнее продолжительность работы,
-попробуй в «Параметры системы → Управление питанием» сбалансированный профиль
-от сети и энергосбережение от батареи. Переключение видно в виджете питания Plasma
-и через `tuned-adm active`. Отдельно проверь `cat /sys/class/power_supply/BAT1/charge_types`:
-на этом Lenovo уже выбран `[Long_Life]` для работы от розетки.
-[Профили питания Fedora](https://fedoraproject.org/wiki/Changes/TunedAsTheDefaultPowerProfileManagementDaemon),
-[KDE PowerDevil](https://docs.kde.org/stable_kf6/en/powerdevil/kcontrol/powerdevil/).
-
-**3. Видео на Intel Iris Xe.** В личном `mpv.conf` параметр `hwdec` пока не задан.
-Если MPV нагружает CPU, запусти `mpv --no-config --hwdec=auto -- "фильм.mkv"`
-на встроенном экране. Если видишь `Using hardware decoding (vaapi)`,
-сравни плавность и нагрузку с обычным запуском на том же файле.
-При улучшении сохрани `hwdec=auto` в `~/Main/System/Configs/mpv/mpv.conf`.
-[Настройка аппаратного декодирования в MPV](https://mpv.io/manual/stable/#options-hwdec).
-
-**4. Девять рабочих столов и HDMI.** В Plasma 6.8 попробуй независимое
-переключение столов на каждом экране. Оставь документацию на внешнем мониторе
-и переключи на ноутбуке рабочий стол с IDE на терминал. Обзор сетки открывается
-через `Meta+W`. [Новое в Fedora KDE 45](https://fedoramagazine.org/whats-new-in-fedora-kde-plasma-desktop-45/).
-
-## Личные приложения
-
-После базовой установки верни используемые на этом ноутбуке приложения.
-Пакеты из штатных репозиториев Fedora можно установить одной транзакцией:
+<details>
+<summary>Личные приложения</summary>
 
 ```bash
 sudo dnf5 install btop mpv yakuake libreoffice-draw libreoffice-math mediawriter
-```
-
-Obsidian и Telegram установлены системно из Flathub. После подключения
-Flathub верни их вместе:
-
-```bash
+flatpak remote-add --system --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+flatpak remote-modify --system --no-filter --enable flathub
 flatpak install --system flathub md.obsidian.Obsidian org.telegram.desktop
 ```
 
-Дополнительно на ноутбуке стоят Vivaldi и ChatGPT из репозиториев поставщиков. Данные приложений в `~/.var/app` и
-профили в домашней папке за пределами `~/Main` требуют отдельной резервной
-копии, если хочешь вернуть сеансы и локальные настройки. [Работа с Flatpak](https://docs.flatpak.org/en/latest/using-flatpak.html).
+</details>
 
-## Конфиги и структура Main
+## 5. Настроить Plasma
 
-```text
-Main/
-├── Projects/         рабочие проекты
-└── System/
-    ├── Configs/
-    │   ├── .ssh/     ключи и настройки OpenSSH
-    │   ├── zsh/
-    │   ├── starship/
-    │   ├── konsole/
-    │   ├── fastfetch/
-    │   ├── dolphin/
-    │   └── mpv/
-    ├── Setup/        Git-репозиторий с установщиком
-    ├── Scripts/      backup-main
-    └── Profiles/     личные профили
-```
+В «Параметрах системы» добавь **English (US)** и **Russian**, переключение на **Caps Lock** и запоминание раскладки по приложению. Повтор клавиши — **250 мс**, **20 повторов/с**. Создай **9 рабочих столов** в **3 ряда**.
 
-| Файл в System/Configs | Ссылка в домашней папке |
-|---|---|
-| `zsh/zshrc` | `~/.zshrc` |
-| `starship/starship.toml` | `~/.config/starship.toml` |
-| `konsole/konsolerc` | `~/.config/konsolerc` |
-| `konsole/Profile 1.profile` | `~/.local/share/konsole/Profile 1.profile` |
-| `konsole/Catppuccin-Mocha.colorscheme` | `~/.local/share/konsole/Catppuccin-Mocha.colorscheme` |
-| `fastfetch/config.jsonc` | `~/.config/fastfetch/config.jsonc` |
-| `dolphin/dolphinrc` | `~/.config/dolphinrc` |
-| `dolphin/dolphinui.rc` | `~/.local/share/kxmlgui5/dolphin/dolphinui.rc` |
-| `mpv/mpv.conf` | `~/.config/mpv/mpv.conf` |
-
-| Ссылка на каталог | Куда ведёт |
-|---|---|
-| `~/.ssh` | `~/Main/System/Configs/.ssh` |
-| `~/Projects` | `~/Main/Projects` |
-
-Правки через системные пути меняют файлы в Main. В облачную копию они попадают
-при следующем запуске `backup-main`. Папка `System/Configs` должна оставаться
-на своём месте. Git-репозиторий находится отдельно, в `System/Setup`.
-
-Ключи SSH, пароли Restic, OAuth-данные и профиль браузера хранятся вне Git.
-
-### Переход с bind-монтирования Projects
-
-Этот шаг нужен, если после переустановки сохранилась старая запись в `/etc/fstab`
-для bind-монтирования `~/Main/Projects` в `~/Projects`.
-Проверь активное монтирование и запись для следующей загрузки:
-
-```bash
-findmnt --mountpoint "$HOME/Projects" -o TARGET,SOURCE
-findmnt --fstab --mountpoint "$HOME/Projects" -o TARGET,SOURCE,OPTIONS
-```
-
-Закрой терминалы и приложения, работающие в `~/Projects`. В отдельной Konsole
-проверь план, затем запусти миграцию:
-
-```bash
-cd "$HOME/Main/System/Setup"
-bash scripts/migrate-projects-bind.sh --dry-run
-bash scripts/migrate-projects-bind.sh
-readlink -e -- "$HOME/Projects"
-```
-
-Скрипт проверяет источник монтирования, сохраняет копию `/etc/fstab`,
-отключает прежнюю запись и обновляет состояние systemd. При занятом каталоге
-закрой использующее его приложение и повтори запуск. После размонтирования
-установщик сохраняет открывшийся каталог целиком перед созданием ссылки.
-Ожидаемый результат `readlink` — путь к `Main/Projects`. [Документация systemd.mount](https://www.freedesktop.org/software/systemd/man/latest/systemd.mount.html).
-
-### OpenSSH на Fedora
-
-Исходный `Configs/.ssh` должен принадлежать пользователю и иметь режим `0700`.
-Обычный режим личного ключа — `0600`. После подключения проверь путь и права:
-
-```bash
-readlink -e -- "$HOME/.ssh"
-stat -Lc '%a %U %n' -- "$HOME/.ssh"
-```
-
-Для использования локального агента Fedora включи его пользовательский сокет
-командой `systemctl --user enable --now ssh-agent.socket` и открой новую Konsole.
-Проверка `ssh-add -l` покажет загруженные ключи или сообщит, что агент пуст.
-[Руководство OpenSSH](https://man.openbsd.org/ssh.1#FILES).
-
-Если ноутбук принимает **входящие SSH-подключения по ключу** и SELinux работает
-в режиме Enforcing, проверь метку фактического каталога через
-`ls -Zd "$HOME/Main/System/Configs/.ssh"`. Стандартный тип Fedora для него —
-`ssh_home_t`. Если правило для перенесённого каталога ещё отсутствует, задай
-эквивалентность путей и примени метки:
-
-```bash
-sudo dnf5 install policycoreutils-python-utils
-sudo semanage fcontext -a -e "$HOME/.ssh" "$HOME/Main/System/Configs/.ssh"
-sudo restorecon -R "$HOME/Main/System/Configs/.ssh"
-sudo restorecon "$HOME/.ssh"
-ls -Zd "$HOME/.ssh" "$HOME/Main/System/Configs/.ssh"
-```
-
-Существующие локальные правила можно посмотреть через `sudo semanage fcontext -l -C`.
-[Политика Fedora для SSH](https://github.com/fedora-selinux/selinux-policy/blob/rawhide/policy/modules/services/ssh.fc),
-[справка semanage fcontext](https://man7.org/linux/man-pages/man8/semanage-fcontext.8.html).
-
-## Проверки и повторный запуск
-
-Из каталога `Setup`:
-
-```bash
-bash install.sh --dry-run
-python3 -B scripts/links.py --check
-python3 -B scripts/audit.py --configs
-bash install.sh --check
-python3 -B -m unittest discover -s tests
-```
-
-| Команда | Действие |
-|---|---|
-| `bash install.sh --restore` | Восстановить и проверить Main с уже настроенным rclone. Затем отдельно запустить `bash install.sh` |
-| `bash install.sh --rehearse` | Восстановить снимок в отдельную папку и проверить источники всех ссылок |
-| `bash install.sh` | Скачать свежие зависимости и создать ссылки для восстановленной Main |
-| `bash install.sh --links-only` | Создать или исправить ссылки, без DNF и загрузок |
-| `bash install.sh --dry-run` | Показать план без сети и записи файлов |
-| `bash install.sh --check` | Локально проверить ссылки, контрольные суммы установленных зависимостей и синтаксис Zsh |
-
-Для `--restore` нужна свободная позиция `~/Main`. В старых снимках с
-`Main/Configs/Dotfiles` установщик подключает девять файлов, а также
-каталоги `.ssh` и `Projects`, если они присутствуют в снимке.
-В снимке с современной раскладкой `Main/System/Configs` нужны оба каталога.
-Если один отсутствует, после возврата данных дополни `~/Main` из другого
-проверенного снимка и повтори шаг 5.
-
-Конфликтующие файлы и прежние каталоги сохраняются в отдельных резервных
-копиях внутри `${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles/backups`. Если
-каталог состояния на другом разделе, прежние каталоги переносятся в
-`~/.dotfiles-backup-*`. Установщик печатает точный путь. Проверь копию,
-если в старом `~/Projects` или `~/.ssh` были файлы, которых нет в Main.
-Повторный запуск пропускает правильные ссылки. При ошибке замены уже
-установленные в этом запуске ссылки откатываются.
-При каждом обычном запуске установщик получает последние стабильные выпуски
-Starship, zsh-patina и JetBrains Mono Nerd Font и сверяет архивы с SHA‑256 из
-метаданных GitHub. Для zsh-autosuggestions он выбирает последний стабильный тег.
-До замены файлов установщик проверяет запуск скачанных Starship и Patina
-и синтаксис плагина Zsh. Если проверка завершается ошибкой, действующие файлы
-остаются на месте.
-[Starship](https://github.com/starship/starship/releases/latest),
-[zsh-patina](https://github.com/michel-kraemer/zsh-patina/releases/latest),
-[Nerd Fonts](https://github.com/ryanoasis/nerd-fonts/releases/latest),
-[zsh-autosuggestions](https://github.com/zsh-users/zsh-autosuggestions).
-
-`--check` сверяет файлы с контрольными суммами последней успешной установки
-и работает без интернета. Чтобы получить очередные релизы или восстановить
-изменённые файлы, запусти:
-
-```bash
-bash install.sh
-```
-
-После обновления открой новую Konsole. Если подсветка Patina перестала работать,
-проверь её командой `zsh-patina check` и перезапусти фоновый процесс через
-`zsh-patina restart`. [Руководство zsh-patina](https://github.com/michel-kraemer/zsh-patina#troubleshooting).
-
-## Настройки Plasma
-
-После установки задай параметры Plasma вручную через «Параметры системы».
-В настройках клавиатуры добавь **English (US)** и
-**Russian**. Назначь переключение на **Caps Lock** и выбери запоминание раскладки
-по приложению. Для повтора клавиш поставь задержку **250 мс** и скорость **20 повторов/с**.
-В разделе «Виртуальные рабочие столы» создай **9 столов** в **3 ряда**. Затем открой
-«Комбинации клавиш» и задай:
+Открой «Клавиатура → Комбинации клавиш». Для Konsole и своего браузера выбери «Добавить приложение», затем задай сочетания. [Горячие клавиши KDE](https://docs.kde.org/stable_kf6/en/plasma-desktop/kcontrol/keys/index.html).
 
 | Клавиши | Действие |
 |---|---|
@@ -731,22 +193,7 @@ bash install.sh
 | Meta+D или Meta+Ctrl+Right | Стол справа |
 | Meta+Ctrl+Up / Meta+Ctrl+Down | Стол сверху / снизу |
 | Meta+1 / Meta+2 / Meta+3 | Стол №2 / №5 / №8 |
-| Meta+Enter | Запустить Konsole |
+| Meta+Enter | Konsole |
+| Meta+Shift+Enter | Браузер |
 
-Если Meta+D занято действием «Показать рабочий стол», освободи его перед назначением.
-
-## Источники
-
-- [Релиз Fedora 45](https://fedoramagazine.org/announcing-fedora-linux-45/) и
-  [Fedora KDE Plasma Desktop 45](https://fedoramagazine.org/whats-new-in-fedora-kde-plasma-desktop-45/).
-- RPM Fusion: [репозитории](https://rpmfusion.org/Configuration),
-  [NVIDIA](https://rpmfusion.org/Howto/NVIDIA), [мультимедиа](https://rpmfusion.org/Howto/Multimedia).
-  При сверке прямой доступ к wiki закрыт защитой сайта.
-- [zram-generator](https://github.com/systemd/zram-generator/blob/main/man/zram-generator.conf.md),
-  [zram в ядре Linux](https://docs.kernel.org/admin-guide/blockdev/zram.html) и
-  штатный конфиг установленного пакета `zram-generator-defaults-1.2.1-6.fc45`.
-- [rclone: Google Drive](https://rclone.org/drive/),
-  [Google OAuth](https://developers.google.com/identity/protocols/oauth2#expiration) и
-  [Restic](https://restic.readthedocs.io/en/stable/050_restore.html).
-- [DNF5 install](https://dnf5.readthedocs.io/en/latest/commands/install.8.html)
-  и [варианты curl в Fedora](https://fedoraproject.org/wiki/Changes/CurlMinimal_as_Default).
+Если `Meta+D` занято действием «Показать рабочий стол», освободи его перед назначением. Проверь открытие проекта, сочетания, сон и внешний экран, если им пользуешься.

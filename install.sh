@@ -98,7 +98,7 @@ package_installed() {
 command -v rpm >/dev/null || die 'RPM is required to check installed packages.'
 readonly -a PACKAGES=(
   zsh konsole fastfetch dolphin git curl python3 fontconfig util-linux restic rclone
-  ca-certificates diffutils gh openssh-clients xdg-utils
+  ca-certificates diffutils openssh-clients xdg-utils
 )
 declare -a MISSING_PACKAGES=()
 for package in "${PACKAGES[@]}"; do
