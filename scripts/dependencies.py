@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+"""Install upstream releases and verify locally installed copies."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path, PurePosixPath
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tarfile
+import tempfile
+from datetime import datetime, timezone
+from urllib.parse import urlsplit
+
+from links import LinkError, directory_chain, normal_home, user_directory
+
+
+BINARIES = ("starship", "zsh-patina")
+FONT_DIR = Path("fonts/JetBrainsMonoNerdFont")
+FONT_FILES = (
+    "JetBrainsMonoNerdFont-Bold.ttf",
+    "JetBrainsMonoNerdFont-BoldItalic.ttf",
+    "JetBrainsMonoNerdFont-Italic.ttf",
+    "JetBrainsMonoNerdFont-Regular.ttf",
+    "OFL.txt",
+)
+AUTOSUGGESTION_FILES = ("zsh-autosuggestions.zsh", "LICENSE")
+AUTOSUGGESTION_REPO = "https://github.com/zsh-users/zsh-autosuggestions.git"
+MAX_BYTES = 100 * 1024 * 1024
+
+
+class DependencyError(Exception):
+    pass
+
+
+def safe_file(path):
+    directory_chain(path.parent)
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise DependencyError(f"Expected a regular file or an unused path: {path}")
+
+
+def download(url, destination):
+    subprocess.run([
+        "curl", "--disable", "--fail", "--location", "--silent", "--show-error",
+        "--proto", "=https", "--proto-redir", "=https", "--tlsv1.2",
+        "--connect-timeout", "15", "--max-time", "300", "--retry", "2",
+        "--max-filesize", str(MAX_BYTES), "--output", str(destination), url,
+    ], check=True)
+
+
+def sha256(path):
+    with path.open("rb") as file:
+        return hashlib.file_digest(file, "sha256").hexdigest()
+
+
+def latest_archive(work, repo, filename):
+    metadata = work / "release.json"
+    download(f"https://api.github.com/repos/{repo}/releases/latest", metadata)
+    release = json.loads(metadata.read_bytes())
+    matches = [asset for asset in release["assets"] if re.fullmatch(filename, asset["name"])]
+    if len(matches) != 1:
+        raise DependencyError(f"Expected one matching archive for the latest release of {repo}.")
+    asset = matches[0]
+    checksum = asset.get("digest")
+    if not isinstance(checksum, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", checksum):
+        raise DependencyError(f"GitHub did not publish a SHA-256 for {asset['name']}.")
+    url = asset["browser_download_url"]
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or parsed.netloc != "github.com" or not parsed.path.startswith(f"/{repo}/releases/download/"):
+        raise DependencyError(f"Unexpected download URL for {repo}.")
+    archive = work / asset["name"]
+    download(url, archive)
+    if sha256(archive) != checksum.removeprefix("sha256:"):
+        raise DependencyError(f"Download checksum mismatch for {asset['name']}.")
+    print(f"{repo}: {release['tag_name']}", flush=True)
+    return archive
+
+
+def archive_files(path, names):
+    wanted = set(names)
+    files = {}
+    with tarfile.open(path) as archive:
+        for member in archive:
+            name = PurePosixPath(member.name).name
+            if name not in wanted:
+                continue
+            if name in files or not member.isfile() or not 0 < member.size <= MAX_BYTES:
+                raise DependencyError(f"Expected one regular archive member: {name}")
+            # Read the entry as bytes. Treat paths and links in the archive as data.
+            with archive.extractfile(member) as file:
+                files[name] = file.read()
+    if missing := wanted - files.keys():
+        raise DependencyError(f"{path.name} is missing: {', '.join(sorted(missing))}")
+    return files
+
+
+def fetch_latest(work, arch):
+    starship_target = "gnu" if arch == "x86_64" else "musl"
+    starship = latest_archive(
+        work, "starship/starship", re.escape(f"starship-{arch}-unknown-linux-{starship_target}.tar.gz"),
+    )
+    patina = latest_archive(
+        work, "michel-kraemer/zsh-patina", rf"zsh-patina-v[A-Za-z0-9.+_-]+-{arch}-unknown-linux-gnu\.tar\.gz",
+    )
+    fonts = latest_archive(work, "ryanoasis/nerd-fonts", re.escape("JetBrainsMono.tar.xz"))
+    files = archive_files(starship, ("starship",))
+    files.update(archive_files(patina, ("zsh-patina",)))
+    files.update(archive_files(fonts, FONT_FILES))
+
+    checkout = work / "zsh-autosuggestions"
+    subprocess.run([
+        "git", "-c", "credential.helper=", "-c", "protocol.allow=never", "-c", "protocol.https.allow=always",
+        "clone", "--quiet", "--depth=1", "--no-tags", "--no-checkout", AUTOSUGGESTION_REPO, str(checkout),
+    ], check=True, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+    for name in AUTOSUGGESTION_FILES:
+        files[name] = subprocess.check_output(["git", "-C", str(checkout), "show", f"HEAD:{name}"])
+    revision = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "--short", "HEAD"], text=True)
+    print(f"zsh-users/zsh-autosuggestions: {revision.strip()}", flush=True)
+    return files
+
+
+def matches(path, digest, mode):
+    return path.is_file() and stat.S_IMODE(path.stat().st_mode) == mode and sha256(path) == digest
+
+
+def write_file(path, payload, mode):
+    safe_file(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=".dotfiles.")
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as file:
+            file.write(payload)
+        temporary.chmod(mode)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def check(home, targets, record):
+    if not record.is_file():
+        raise DependencyError("Missing download checksums. Run bash install.sh to download and verify the dependencies.")
+    checksums = json.loads(record.read_bytes())
+    if not isinstance(checksums, dict):
+        raise DependencyError("Invalid download checksums. Run bash install.sh.")
+    mismatches = [
+        str(target)
+        for target, mode in targets.values()
+        if not matches(target, checksums.get(str(target.relative_to(home))), mode)
+    ]
+    if mismatches:
+        raise DependencyError("Dependencies differ or are missing. Run bash install.sh.\n" + "\n".join(mismatches))
+
+
+def install(home, targets, record, font_dir, arch):
+    with tempfile.TemporaryDirectory(prefix="fedora-kde-dependencies-") as temp:
+        files = fetch_latest(Path(temp), arch)
+    checksums = {}
+    backup = None
+    fonts_changed = False
+    for name, (target, mode) in targets.items():
+        safe_file(target)
+        relative = target.relative_to(home)
+        digest = hashlib.sha256(files[name]).hexdigest()
+        checksums[str(relative)] = digest
+        if matches(target, digest, mode):
+            continue
+        if target.exists():
+            if backup is None:
+                backup_dir = record.parent / "backups"
+                directory_chain(backup_dir)
+                backup_dir.mkdir(parents=True, exist_ok=True)
+                stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                backup = Path(tempfile.mkdtemp(prefix=stamp + "-dependencies-", dir=backup_dir))
+                print(f"Dependency backups: {backup}", flush=True)
+            saved = backup / relative
+            saved.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(target, saved, follow_symlinks=False)
+        write_file(target, files[name], mode)
+        print(f"Installed: {target}", flush=True)
+        fonts_changed |= target.parent == font_dir
+
+    data = (json.dumps(checksums, indent=2, sort_keys=True) + "\n").encode()
+    checksums_changed = not record.is_file() or record.read_bytes() != data
+    if fonts_changed or checksums_changed:
+        subprocess.run(["fc-cache", str(font_dir)], check=True)
+    if checksums_changed:
+        write_file(record, data, 0o600)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=("validate", "plan", "install", "check"))
+    parser.add_argument("arch", choices=("x86_64", "aarch64"))
+    args = parser.parse_args()
+    home = normal_home()
+    font_dir = user_directory(home, "XDG_DATA_HOME", ".local/share") / FONT_DIR
+    record = user_directory(home, "XDG_STATE_HOME", ".local/state") / "dotfiles/dependencies.json"
+    targets = {name: (home / ".local/bin" / name, 0o755) for name in BINARIES}
+    targets.update({name: (font_dir / name, 0o644) for name in FONT_FILES})
+    targets.update({name: (home / ".zsh/zsh-autosuggestions" / name, 0o644) for name in AUTOSUGGESTION_FILES})
+    for path, _ in targets.values():
+        safe_file(path)
+    safe_file(record)
+    if args.action == "plan":
+        print("Would fetch the latest Starship, zsh-patina, JetBrains Mono Nerd Font and zsh-autosuggestions.")
+        for path, _ in targets.values():
+            print(f"Dependency target: {path}")
+    elif args.action == "install":
+        install(home, targets, record, font_dir, args.arch)
+    elif args.action == "check":
+        check(home, targets, record)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (DependencyError, LinkError, OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError, tarfile.TarError) as error:
+        sys.exit(f"Dependency setup: {error}")

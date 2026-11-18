@@ -55,10 +55,25 @@ if name == 'sudo':
 elif name == 'curl':
     assert not os.environ.get('FORBID_DOWNLOAD'), 'Unexpected network request'
     output = pathlib.Path(sys.argv[sys.argv.index('--output') + 1])
-    if os.environ.get('CORRUPT_DOWNLOAD'):
+    url = sys.argv[-1]
+    fixtures = pathlib.Path(os.environ['FIXTURES'])
+    if url.startswith('https://api.github.com/'):
+        assert url.endswith('/releases/latest')
+        shutil.copyfile(fixtures / (url.split('/')[-3] + '.json'), output)
+    elif os.environ.get('CORRUPT_DOWNLOAD'):
         output.write_bytes(b'corrupted')
     else:
-        shutil.copyfile(pathlib.Path(os.environ['FIXTURES']) / sys.argv[-1].split('/')[-1], output)
+        shutil.copyfile(fixtures / url.split('/')[-1], output)
+elif name == 'git':
+    if 'clone' in sys.argv:
+        assert not os.environ.get('FORBID_DOWNLOAD'), 'Unexpected Git clone'
+        assert sys.argv[-2] == 'https://github.com/zsh-users/zsh-autosuggestions.git'
+        pathlib.Path(sys.argv[-1]).mkdir()
+    elif sys.argv[3] == 'show':
+        sys.stdout.buffer.write((pathlib.Path(os.environ['FIXTURES']) / sys.argv[4].removeprefix('HEAD:')).read_bytes())
+    else:
+        assert sys.argv[3:] == ['rev-parse', '--short', 'HEAD']
+        print('abcd123')
 elif name not in ('fc-cache', 'zsh'):
     raise SystemExit('Unexpected command: ' + name)
 '''
@@ -134,7 +149,7 @@ class InstallerTests(unittest.TestCase):
         self.fixtures.mkdir()
         self.log = self.base / "calls"
         self.command_log = self.base / "commands"
-        for name in ["rpm", "sudo", "dnf5", "curl", "fc-cache", "zsh", "restic", "rclone"]:
+        for name in ["rpm", "sudo", "dnf5", "curl", "git", "fc-cache", "zsh", "restic", "rclone"]:
             command = self.bin / name
             command.write_text(MOCK)
             command.chmod(0o755)
@@ -147,33 +162,45 @@ class InstallerTests(unittest.TestCase):
             COMMAND_LOG=str(self.command_log),
             FIXTURES=str(self.fixtures),
         )
-        self.rows = []
-        for component in ["starship", "zsh-patina"]:
-            payload = b"#!/bin/sh\nexit 0\n"
-            archive = self.fixtures / f"{component}.tar.gz"
-            self.make_archive(archive, {component: payload})
-            self.rows.append(["all", f"https://github.com/starship/starship/releases/download/test/{archive.name}", digest(archive.read_bytes()), component, digest(payload), f".local/bin/{component}", "755"])
-        font = self.fixtures / "font.tar.gz"
-        members = {"Regular.ttf": b"font fixture", "OFL.txt": b"license fixture"}
+        arch = os.uname().machine
+        target = "gnu" if arch == "x86_64" else "musl"
+        self.starship = self.fixtures / f"starship-{arch}-unknown-linux-{target}.tar.gz"
+        self.patina = self.fixtures / f"zsh-patina-v10-{arch}-unknown-linux-gnu.tar.gz"
+        for path, repo, executable in (
+            (self.starship, "starship/starship", "starship"),
+            (self.patina, "michel-kraemer/zsh-patina", "zsh-patina"),
+        ):
+            self.make_archive(path, {f"bin/{executable}": b"#!/bin/sh\nexit 0\n"})
+            self.release(repo, path, "10")
+        font = self.fixtures / "JetBrainsMono.tar.xz"
+        members = {f"JetBrainsMonoNerdFont-{style}.ttf": b"font fixture"
+                   for style in ("Bold", "BoldItalic", "Italic", "Regular")}
+        members["OFL.txt"] = b"license fixture"
         self.make_archive(font, members)
-        for name, payload in members.items():
-            self.rows.append(["all", f"https://github.com/ryanoasis/nerd-fonts/releases/download/test/{font.name}", digest(font.read_bytes()), name, digest(payload), f".local/share/fonts/JetBrainsMonoNerdFont/{name}", "644"])
+        self.release("ryanoasis/nerd-fonts", font, "10")
         for name in ["zsh-autosuggestions.zsh", "LICENSE"]:
-            payload = b"# autosuggestions fixture\n"
-            (self.fixtures / name).write_bytes(payload)
-            self.rows.append(["all", f"https://raw.githubusercontent.com/zsh-users/zsh-autosuggestions/test/{name}", digest(payload), "-", digest(payload), f".zsh/zsh-autosuggestions/{name}", "644"])
-        self.update_lock()
+            (self.fixtures / name).write_bytes(b"# autosuggestions fixture\n")
+        self.update_manifest()
 
     @staticmethod
     def make_archive(path, members):
-        with tarfile.open(path, "w:gz") as archive:
+        with tarfile.open(path, "w:xz" if path.suffix == ".xz" else "w:gz") as archive:
             for name, payload in members.items():
                 info = tarfile.TarInfo(name)
                 info.size = len(payload)
                 archive.addfile(info, io.BytesIO(payload))
 
-    def update_lock(self):
-        (self.repo / "dependencies.tsv").write_text("\n".join("\t".join(row) for row in self.rows) + "\n")
+    def release(self, repo, archive, tag):
+        asset = {
+            "name": archive.name,
+            "digest": "sha256:" + digest(archive.read_bytes()),
+            "browser_download_url": f"https://github.com/{repo}/releases/download/{tag}/{archive.name}",
+        }
+        (self.fixtures / (repo.split("/")[-1] + ".json")).write_text(json.dumps(
+            {"tag_name": tag, "assets": [asset]},
+        ))
+
+    def update_manifest(self):
         files = sorted(p for p in self.repo.rglob("*") if p.is_file() and p.name != "SHA256SUMS")
         (self.repo / "SHA256SUMS").write_text("".join(f"{digest(p.read_bytes())}  {p.relative_to(self.repo).as_posix()}\n" for p in files))
 
@@ -211,16 +238,16 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(backups[0].read_text(), "original config\n")
         self.assertEqual(backups[0].stat().st_mode & 0o777, 0o600)
         before = snapshot(self.home)
-        self.run_installer(FORBID_DOWNLOAD="1", FORBID_SUDO="1")
+        self.run_installer(FORBID_SUDO="1")
         self.assertEqual(snapshot(self.home), before)
-        self.run_installer("--check")
+        self.run_installer("--check", FORBID_DOWNLOAD="1", FORBID_SUDO="1")
 
     def test_config_changes_in_main_are_kept_and_check_passes(self):
         self.run_installer()
         (self.home / ".config/starship.toml").write_text("# changed live config\n")
         self.assertEqual((self.sources / links.CONFIG_FILES[".config/starship.toml"]).read_text(), "# changed live config\n")
         self.run_installer("--check")
-        self.run_installer(FORBID_DOWNLOAD="1", FORBID_SUDO="1")
+        self.run_installer(FORBID_SUDO="1")
         self.assertEqual((self.sources / links.CONFIG_FILES[".config/starship.toml"]).read_text(), "# changed live config\n")
 
     def test_links_only_does_not_install_or_download(self):
@@ -286,8 +313,25 @@ class InstallerTests(unittest.TestCase):
 
     def test_corrupt_download_does_not_replace_live_configs(self):
         (self.home / ".zshrc").write_text("keep me")
-        self.run_installer(success=False, CORRUPT_DOWNLOAD="1")
+        result = self.run_installer(success=False, CORRUPT_DOWNLOAD="1")
+        self.assertIn("checksum mismatch", result.stderr)
         self.assertEqual((self.home / ".zshrc").read_text(), "keep me")
+
+    def test_new_release_replaces_the_binary_and_preserves_a_backup(self):
+        self.run_installer()
+        target = self.home / ".local/bin/zsh-patina"
+        original = target.read_bytes()
+        path = self.patina.with_name(self.patina.name.replace("-v10-", "-v11-"))
+        new = b"#!/bin/sh\n# updated\nexit 0\n"
+        self.make_archive(path, {"different-directory/zsh-patina": new})
+        self.release("michel-kraemer/zsh-patina", path, "11")
+        self.run_installer(FORBID_SUDO="1")
+        self.assertEqual(target.read_bytes(), new)
+        backups = (self.home / ".local/state/dotfiles/backups").glob("*/.local/bin/zsh-patina")
+        self.assertEqual([path.read_bytes() for path in backups], [original])
+        self.run_installer("--check", FORBID_DOWNLOAD="1")
+        target.write_bytes(b"corrupted local binary")
+        self.run_installer("--check", success=False, FORBID_DOWNLOAD="1")
 
     def test_config_parent_symlink_is_rejected(self):
         outside = self.base / "outside"
@@ -298,7 +342,7 @@ class InstallerTests(unittest.TestCase):
         self.assertNotIn("sudo", self.calls())
 
     def test_manifest_tamper_stops_before_changes(self):
-        with (self.repo / "dependencies.tsv").open("a") as output:
+        with (self.repo / "scripts/dependencies.py").open("a") as output:
             output.write("# changed\n")
         before = snapshot(self.home)
         self.run_installer("--dry-run", success=False)
@@ -357,7 +401,7 @@ for relative in CONFIGS:
 (root / '.ssh').mkdir(mode=0o700)
 (main / 'Projects').mkdir()
 """)
-        self.update_lock()
+        self.update_manifest()
         master, slave = pty.openpty()
         child = subprocess.Popen(["bash", str(self.repo / "install.sh"), "--restore"], env=self.env, cwd=self.base, stdin=slave, stdout=slave, stderr=slave)
         os.close(slave)
@@ -389,22 +433,18 @@ for relative in CONFIGS:
         self.assertEqual((self.home / ".zshrc").read_text(), "# restored config\n")
 
     def test_archive_symlink_is_rejected(self):
-        archive_path = self.fixtures / "starship.tar.gz"
-        with tarfile.open(archive_path, "w:gz") as archive:
+        with tarfile.open(self.starship, "w:gz") as archive:
             link = tarfile.TarInfo("starship")
             link.type = tarfile.SYMTYPE
             link.linkname = str(self.base / "outside")
             archive.addfile(link)
-        self.rows[0][2] = digest(archive_path.read_bytes())
-        self.update_lock()
+        self.release("starship/starship", self.starship, "11")
         self.run_installer(success=False)
         self.assertFalse((self.home / ".zshrc").exists())
 
     def test_other_archive_paths_are_never_extracted(self):
-        path = self.fixtures / "starship.tar.gz"
-        self.make_archive(path, {"starship": b"#!/bin/sh\nexit 0\n", "../../escape.txt": b"unexpected"})
-        self.rows[0][2] = digest(path.read_bytes())
-        self.update_lock()
+        self.make_archive(self.starship, {"starship": b"#!/bin/sh\nexit 0\n", "../../escape.txt": b"unexpected"})
+        self.release("starship/starship", self.starship, "11")
         temporary = self.base / "tmp"
         temporary.mkdir()
         self.run_installer(TMPDIR=str(temporary))
@@ -426,7 +466,7 @@ for relative in CONFIGS:
         # The shared restore helper also has an independent existing-Main guard.
         helper = self.repo / 'scripts/restore.py'
         helper.write_text("raise AssertionError('Restore must not run with existing Main')\n")
-        self.update_lock()
+        self.update_manifest()
         master, slave = pty.openpty()
         before = snapshot(self.home)
         try:

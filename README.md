@@ -13,9 +13,11 @@
 | [4. Восстановить Main](#4-восстановить-main) | `bash install.sh --restore` возвращает проверенные файлы в `~/Main` и завершается |
 | [5. Применить настройки](#5-применить-настройки) | Отдельный `bash install.sh` устанавливает зависимости и подключает 11 ссылок |
 
-Если `~/Main` сохранился на отдельном разделе, после подготовки Fedora переходи к шагу 5.
+Если `~/Main` сохранился на отдельном разделе, выполни шаги 1–3 и склонируй
+репозиторий в шаге 4. Пропусти только команду `bash install.sh --restore`, затем
+примени настройки в шаге 5. После перезагрузок возвращайся в этот README в GitHub.
 Предложения по автономности, видео и рабочим столам собраны в разделе
-[«Что можно улучшить»](#что-можно-улучшить). Гайд сверен 17 ноября 2026 года.
+[«Что можно улучшить»](#что-можно-улучшить). Гайд сверен 18 ноября 2026 года.
 
 ## Перед переустановкой
 
@@ -31,6 +33,38 @@
 3. Скачай именно Fedora KDE Plasma Desktop 45 Final с [официальной страницы](https://fedoraproject.org/kde/download/),
    проверь подпись CHECKSUM и контрольную сумму ISO по инструкции там же.
    Перед форматированием сверь целевой диск и сохраняемые разделы.
+
+**Проверь копию до стирания диска.** В Konsole на действующей системе создай снимок
+и выведи список последних копий. Введи пароль существующего репозитория Restic,
+когда он будет запрошен:
+
+```bash
+"$HOME/Main/System/Scripts/backup-main" &&
+  restic --no-lock -r rclone:gdrive:backups/main-restic snapshots --tag main-only --latest 1
+```
+
+Скопируй ID только что созданного снимка. Следующий блок вернёт один файл
+в отдельную временную папку и сравнит его с оригиналом:
+
+```bash
+printf 'ID снимка: '
+IFS= read -r snapshot_id
+sample_dir=$(mktemp -d)
+restic --no-lock -r rclone:gdrive:backups/main-restic restore "${snapshot_id}:/Main" \
+  --include '/System/Configs/zsh/zshrc' --target "$sample_dir" --verify &&
+  cmp -- "$HOME/Main/System/Configs/zsh/zshrc" "$sample_dir/System/Configs/zsh/zshrc" &&
+  printf 'Файл из снимка совпадает с текущим.\n'
+```
+
+При ошибке восстанови доступ или создай новый снимок и повтори проверку **до
+форматирования**. Для важного файла проекта можно повторить проверку со своим путём
+внутри `Main`. Запиши ID проверенного снимка рядом с данными доступа.
+
+Запиши образ KDE на USB через Fedora Media Writer, загрузи ноутбук с этой флешки
+и запусти установку. Проверь выбранный накопитель перед записью изменений.
+Если сохраняешь отдельный раздел с `/home`, убедись, что для него выключено
+форматирование. После установки загрузи Fedora с внутреннего диска, подключись
+к интернету и открой Konsole. [Скачать Fedora KDE и Media Writer](https://fedoraproject.org/kde/download/).
 
 ## 1. Подготовить Fedora
 
@@ -90,7 +124,6 @@ compression-algorithm = zstd
 EOF
 
 systemd-analyze cat-config systemd/zram-generator.conf
-sudo reboot
 ```
 
 Дополнение имеет приоритет над основным конфигом. Проверь, что другой, более поздний
@@ -98,7 +131,8 @@ sudo reboot
 перезапуск активного zram требует вывода swap из работы и под нагрузкой может
 потребовать больше свободной RAM.
 
-После загрузки:
+Когда в выводе видны выбранные параметры, выполни `sudo reboot`. После входа
+снова открой Konsole и проверь:
 
 ```bash
 zramctl
@@ -115,12 +149,15 @@ swapon --show
 journalctl -b -u 'systemd-zram-setup@*.service'
 ```
 
-Для отмены только этого дополнения:
+<details>
+<summary>Откат личного профиля zram при необходимости</summary>
 
 ```bash
 sudo rm /etc/systemd/zram-generator.conf.d/90-local-zstd.conf
 sudo reboot
 ```
+
+</details>
 
 Другие локальные конфиги при этом продолжат действовать. Параметры `swappiness`,
 writeback и уровень сжатия в этом профиле отдельно не переопределяются.
@@ -184,14 +221,31 @@ sudo dnf5 install -y mokutil
 mokutil --sb-state
 ```
 
-Если вывод — `SecureBoot disabled`, переходи к установке драйвера ниже. При
-`SecureBoot enabled` сначала установи `akmods` и открой его инструкцию
-`/usr/share/doc/akmods/README.secureboot`. Для нового ключа выполни
-`sudo kmodgenca -a`, импортируй сертификат через
-`sudo mokutil --import /etc/pki/akmods/certs/public_key.der` и выбери **Enroll MOK**
-при следующей загрузке. Уже зарегистрированный ключ можно использовать повторно.
-После загрузки проверь его через `mokutil --test-key /etc/pki/akmods/certs/public_key.der`.
+Если вывод — `SecureBoot disabled`, переходи к установке драйвера ниже.
+
+<details>
+<summary>Если включён Secure Boot — зарегистрировать ключ для модуля NVIDIA</summary>
+
+Установи инструменты и создай ключ, если у akmods ещё нет сертификата:
+
+```bash
+sudo dnf5 install akmods mokutil
+if ! sudo test -f /etc/pki/akmods/certs/public_key.der; then
+  sudo kmodgenca -a
+fi
+mokutil --test-key /etc/pki/akmods/certs/public_key.der
+```
+
+Если ключ уже зарегистрирован, переходи к установке драйвера. Если ещё не
+зарегистрирован, выполни `sudo mokutil --import /etc/pki/akmods/certs/public_key.der`,
+задай одноразовый пароль и выполни `sudo reboot`. При следующей загрузке выбери
+**Enroll MOK → Continue → Yes**, введи этот пароль (раскладка US) и выбери **Reboot**.
+После входа снова выполни `mokutil --test-key /etc/pki/akmods/certs/public_key.der`.
+Продолжай после сообщения, что ключ зарегистрирован. На ноутбуке полная инструкция
+пакета лежит в `/usr/share/doc/akmods/README.secureboot`.
 [Руководство RPM Fusion для Secure Boot](https://rpmfusion.org/Howto/Secure%20Boot).
+
+</details>
 
 ```bash
 sudo dnf5 install -y intel-media-driver libva-utils
@@ -219,7 +273,7 @@ modinfo -k "$(uname -r)" -F version nvidia
 sudo reboot
 ```
 
-После загрузки:
+После загрузки снова открой Konsole и проверь драйвер и декодирование:
 
 ```bash
 nvidia-smi
@@ -259,12 +313,22 @@ fwupdmgr get-updates
 
 ```bash
 sudo dnf5 install restic rclone git gh python3
-rclone config
 ```
 
-1. Создай подключение `gdrive` типа Google Drive (`drive`). Если оно уже настроено, сразу проверь снимки командами ниже.
-2. Для своего OAuth-клиента введи Client ID и Client Secret. Для восстановления **и будущих бэкапов** выбери scope `drive`. Если нужен только доступ на чтение, подойдёт `drive.readonly`.
-3. Подтверди доступ в аккаунте Google, где лежит бэкап. Для этого входа подходит браузер из свежей Fedora. При отсутствии браузера на ноутбуке rclone поддерживает авторизацию с другого устройства. Сохрани подключение ответом `y` и выйди через `q`. [Инструкция rclone для Google Drive](https://rclone.org/drive/), [вход с другого устройства](https://rclone.org/remote_setup/).
+Если подключение `gdrive` уже настроено, сразу переходи к проверке снимка. Для
+первого входа выполни `rclone config` и ответь на запросы:
+
+| Запрос | Что выбрать для личного Google Drive |
+|---|---|
+| New remote / name / storage | `n` → `gdrive` → `drive` |
+| Client ID / Client Secret | Ввести свои значения OAuth. Если своего клиента нет, Enter в обоих полях использует клиент rclone |
+| Scope | `drive` для восстановления и будущих бэкапов. Для одного восстановления подходит `drive.readonly` |
+| Service account file / advanced config | Оставить путь пустым и выбрать `n` |
+| Web browser for authentication | `y`. В штатном браузере войти в аккаунт, где лежит бэкап, и разрешить доступ |
+| Shared Drive / keep this remote / выход | Для личного диска `n`, затем `y` и `q` |
+
+Если браузер не открылся автоматически, открой локальный адрес, который напечатал
+rclone в Konsole. [Инструкция rclone для Google Drive](https://rclone.org/drive/), [вход с другого устройства](https://rclone.org/remote_setup/).
 
 Restic открывает существующий зашифрованный репозиторий по его паролю. Проверь доступ и дату снимка:
 
@@ -297,11 +361,16 @@ gh auth login --hostname github.com --git-protocol https --web
 gh auth setup-git --hostname github.com
 mkdir -p "$HOME/Downloads"
 gh repo clone ShagFoal/fedora-kde-setup "$HOME/Downloads/fedora-kde-setup"
+```
+
+Если `~/Main` уже на месте, переходи к шагу 5. Для восстановления из снимка выполни:
+
+```bash
 cd "$HOME/Downloads/fedora-kde-setup"
 bash install.sh --restore
 ```
 
-Выбери снимок по дате и ID. Enter выбирает самый свежий подходящий снимок.
+Выбери снимок по записанному до переустановки ID или по дате. Enter выбирает самый свежий подходящий снимок.
 Скрипт использует `gdrive` из шага 2, восстанавливает во временный каталог в домашней папке
 и проверяет результат через Restic `--verify`. После проверки он переносит данные
 на свободное место `~/Main` и завершается. При сбое во время загрузки в выводе будет
@@ -316,20 +385,17 @@ bash install.sh --restore
 
 ```bash
 cd "$HOME/Downloads/fedora-kde-setup"
-bash install.sh --dry-run
-bash install.sh
-bash install.sh --check
+bash install.sh --dry-run && bash install.sh && bash install.sh --check
 ```
 
 Если используешь сохранённую копию актуального репозитория в `~/Main/System/Setup`,
 выполни эти команды оттуда. Ожидаемый итог — `CHECK PASSED`. Установщик проверяет
-обязательные RPM, закреплённые зависимости и синтаксис Zsh. Девять файлов настроек
+обязательные RPM, загруженные файлы и синтаксис Zsh. Девять файлов настроек
 подключаются к Zsh, Starship, Konsole, Fastfetch, Dolphin и MPV. Ещё две ссылки ведут
 из `~/.ssh` в `~/Main/System/Configs/.ssh` и из `~/Projects` в `~/Main/Projects`.
 
-Открой новую Konsole и Dolphin. Личные сочетания клавиш, раскладки и сетку из девяти
-рабочих столов задай по [инструкции Plasma](PLASMA_MANUAL.md). Для следующей резервной
-копии используй `"$HOME/Main/System/Scripts/backup-main"` с настроенным в шаге 2
+Открой новую Konsole и Dolphin. Дополни [настройки Plasma](#настройки-plasma) ниже.
+Для следующей резервной копии используй `"$HOME/Main/System/Scripts/backup-main"` с настроенным в шаге 2
 доступом на запись. При старом bind-монтировании `~/Projects` есть отдельная
 [инструкция по однократной миграции](#переход-с-bind-монтирования-projects).
 
@@ -505,10 +571,10 @@ python3 -B -m unittest discover -s tests
 | Команда | Действие |
 |---|---|
 | `bash install.sh --restore` | Восстановить и проверить Main с уже настроенным rclone. Затем отдельно запустить `bash install.sh` |
-| `bash install.sh` | Установить зависимости и создать ссылки для восстановленной Main |
+| `bash install.sh` | Скачать свежие зависимости и создать ссылки для восстановленной Main |
 | `bash install.sh --links-only` | Создать или исправить ссылки, без DNF и загрузок |
-| `bash install.sh --dry-run` | Показать план без изменений |
-| `bash install.sh --check` | Проверить ссылки, зависимости и синтаксис Zsh |
+| `bash install.sh --dry-run` | Показать план без сети и записи файлов |
+| `bash install.sh --check` | Локально проверить ссылки, контрольные суммы установленных зависимостей и синтаксис Zsh |
 
 Для `--restore` нужна свободная позиция `~/Main`. В старых снимках с
 `Main/Configs/Dotfiles` установщик подключает девять файлов, а также
@@ -524,22 +590,26 @@ python3 -B -m unittest discover -s tests
 если в старом `~/Projects` или `~/.ssh` были файлы, которых нет в Main.
 Повторный запуск пропускает правильные ссылки. При ошибке замены уже
 установленные в этом запуске ссылки откатываются.
-Версии и контрольные суммы Starship, Patina, Nerd Font и autosuggestions
-закреплены в [dependencies.tsv](dependencies.tsv).
+При каждом обычном запуске установщик получает последние стабильные выпуски
+Starship, zsh-patina и JetBrains Mono Nerd Font и сверяет архивы с SHA‑256 из
+метаданных GitHub. Плагин zsh-autosuggestions берётся из текущего коммита основной
+ветки. Скрипт выводит теги и коммит, затем заменяет только изменившиеся файлы.
+[Starship](https://github.com/starship/starship/releases/latest),
+[zsh-patina](https://github.com/michel-kraemer/zsh-patina/releases/latest),
+[Nerd Fonts](https://github.com/ryanoasis/nerd-fonts/releases/latest),
+[zsh-autosuggestions](https://github.com/zsh-users/zsh-autosuggestions).
 
-| Зависимость | Закреплённая версия |
-|---|---|
-| [Starship](https://github.com/starship/starship/releases/tag/v1.27.0) | 1.27.0 |
-| [zsh-patina](https://github.com/michel-kraemer/zsh-patina/releases/tag/1.11.0) | 1.11.0 |
-| [Nerd Fonts / JetBrains Mono](https://github.com/ryanoasis/nerd-fonts/releases/tag/v3.5.1) | 3.5.1 |
-| [zsh-autosuggestions](https://github.com/zsh-users/zsh-autosuggestions/commit/85919cd1ffa7d2d5412f6d3fe437ebdbeeec4fc5) | `85919cd1` |
-
-`--check` требует точного совпадения установленных файлов с `dependencies.tsv`.
-Применить закреплённые зависимости к текущей системе:
+`--check` сверяет файлы с контрольными суммами последней успешной установки
+и работает без интернета. Чтобы получить очередные релизы или восстановить
+изменённые файлы, запусти:
 
 ```bash
 bash install.sh
 ```
+
+После обновления открой новую Konsole. Если подсветка Patina перестала работать,
+проверь её командой `zsh-patina check` и перезапусти фоновый процесс через
+`zsh-patina restart`. [Руководство zsh-patina](https://github.com/michel-kraemer/zsh-patina#troubleshooting).
 
 Для пробного восстановления Main в отдельную папку:
 
@@ -553,8 +623,21 @@ python3 -B scripts/restore.py restore.json --configured
 
 ## Настройки Plasma
 
-Раскладки, рабочие столы и горячие клавиши описаны в
-[PLASMA_MANUAL.md](PLASMA_MANUAL.md).
+Открой «Параметры системы». В настройках клавиатуры добавь **English (US)** и
+**Russian**. Назначь переключение на **Caps Lock** и выбери запоминание раскладки
+по приложению. Для повтора клавиш поставь задержку **250 мс** и скорость **20 повторов/с**.
+В разделе «Виртуальные рабочие столы» создай **9 столов** в **3 ряда**. Затем открой
+«Комбинации клавиш» и задай:
+
+| Клавиши | Действие |
+|---|---|
+| Meta+A или Meta+Ctrl+Left | Стол слева |
+| Meta+D или Meta+Ctrl+Right | Стол справа |
+| Meta+Ctrl+Up / Meta+Ctrl+Down | Стол сверху / снизу |
+| Meta+1 / Meta+2 / Meta+3 | Стол №2 / №5 / №8 |
+| Meta+Enter | Запустить Konsole |
+
+Если Meta+D занято действием «Показать рабочий стол», освободи его перед назначением.
 
 ## Источники
 

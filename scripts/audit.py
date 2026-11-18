@@ -5,12 +5,11 @@ import json
 from pathlib import Path
 import re
 import sys
-from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED = {
     ".gitignore", "README.md", "PLASMA_MANUAL.md", "install.sh",
-    "dependencies.tsv", "SHA256SUMS", "restore.json", "scripts/audit.py",
+    "scripts/dependencies.py", "SHA256SUMS", "restore.json", "scripts/audit.py",
     "scripts/links.py", "scripts/migrate-projects-bind.sh", "scripts/restore.py", "tests/test_install.py",
     "tests/test_restore.py", "tests/test_links.py", "tests/test_migrate_projects.py",
 }
@@ -74,21 +73,8 @@ if not issues:
                 issues.append(f"{name}: checksum mismatch")
         if checked != ALLOWED - {"SHA256SUMS"}:
             raise ValueError("incomplete manifest")
-        for line in (ROOT / "dependencies.tsv").read_text().splitlines():
-            if not line or line.startswith("#"):
-                continue
-            arch, url, archive_sha, member, file_sha, target, mode = line.split("\t")
-            parsed = urlsplit(url)
-            if arch not in {"all", "x86_64", "aarch64"} or mode not in {"644", "755"}:
-                raise ValueError("unexpected architecture or file mode")
-            if parsed.scheme != "https" or parsed.netloc not in {"github.com", "raw.githubusercontent.com"}:
-                raise ValueError("unexpected dependency URL")
-            if not all(re.fullmatch(r"[0-9a-f]{64}", digest) for digest in (archive_sha, file_sha)):
-                raise ValueError("invalid dependency checksum")
-            if ".." in Path(target).parts or not target.startswith((".local/bin/", ".zsh/zsh-autosuggestions/", ".local/share/fonts/JetBrainsMonoNerdFont/")):
-                raise ValueError("unexpected dependency destination")
     except (ValueError, KeyError, OSError) as error:
-        issues.append("Profile/dependency/integrity validation failed: " + type(error).__name__)
+        issues.append("Profile/integrity validation failed: " + type(error).__name__)
 if len(sys.argv) > 1:
     if sys.argv[1:] != ["--configs"]:
         issues.append("Usage: audit.py [--configs]")

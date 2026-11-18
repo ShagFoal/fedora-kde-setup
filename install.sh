@@ -13,6 +13,7 @@ case "${1:-}" in
   --links-only) MODE=links-only ;;
   -h|--help)
     printf 'Usage: ./install.sh [--dry-run | --check | --restore | --links-only]\n'
+    printf 'The default install fetches the latest upstream dependencies. --check verifies the local installation.\n'
     printf 'With --restore, recover Main from the configured rclone remote. Run ./install.sh afterwards to apply settings.\n'
     printf 'Run as your regular user. sudo is used only for the system package manager.\n'
     exit 0 ;;
@@ -21,12 +22,7 @@ esac
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 note() { printf '%s\n' "$*"; }
-TEMP_DIR=
-BACKUP_DIR=
-CHANGED=0
-cleanup() { [[ -z "$TEMP_DIR" ]] || rm -rf -- "$TEMP_DIR"; }
-trap cleanup EXIT
-trap 'printf "ERROR: line %s. Installation stopped; backups: %s\n" "$LINENO" "${BACKUP_DIR:-none needed yet}" >&2' ERR
+trap 'printf "ERROR: line %s. Installation stopped.\n" "$LINENO" >&2' ERR
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -71,15 +67,6 @@ for base in "$CONFIG_HOME" "$DATA_HOME" "$STATE_HOME" "$ZSH_HOME"; do
 done
 [[ ${STARSHIP_CONFIG:-"$CONFIG_HOME/starship.toml"} = "$CONFIG_HOME/starship.toml" ]] || die 'STARSHIP_CONFIG overrides the managed config.'
 
-resolve_target() {
-  case "$1" in
-    .zshrc) printf '%s/.zshrc' "$ZSH_HOME" ;;
-    .config/*) printf '%s/%s' "$CONFIG_HOME" "${1#.config/}" ;;
-    .local/share/*) printf '%s/%s' "$DATA_HOME" "${1#.local/share/}" ;;
-    *) printf '%s/%s' "$HOME" "$1" ;;
-  esac
-}
-
 safe_file() {
   local target=$1 parent
   [[ "$target" = "$HOME/"* ]] || die "Target is outside HOME: $target"
@@ -111,31 +98,16 @@ for package in "${PACKAGES[@]}"; do
   package_installed "$package" || MISSING_PACKAGES+=("$package")
 done
 
-[[ -f "$REPO_DIR/dependencies.tsv" && ! -L "$REPO_DIR/dependencies.tsv" ]] || die 'Missing regular dependency lock.'
 if command -v python3 >/dev/null; then
   if [[ "$MODE" = install ]]; then
     python3 -B "$REPO_DIR/scripts/links.py" --validate
+    python3 -B "$REPO_DIR/scripts/dependencies.py" validate "$ARCH"
   fi
 elif [[ "$MODE" = dry-run || "$MODE" = check ]]; then
   die 'Python 3 is required for config-link validation.'
 fi
 safe_file "$STATE_HOME/dotfiles/install.lock"
 safe_file "$STATE_HOME/dotfiles/backups/.preflight"
-while IFS=$'\t' read -r arch url archive_hash member file_hash relative mode; do
-  [[ -n "$arch" && "$arch" != \#* ]] || continue
-  [[ "$arch" = all || "$arch" = "$ARCH" ]] || continue
-  [[ "$archive_hash" =~ ^[0-9a-f]{64}$ && "$file_hash" =~ ^[0-9a-f]{64}$ ]] || die 'Invalid dependency hash.'
-  [[ "$url" = https://github.com/* || "$url" = https://raw.githubusercontent.com/* ]] || die 'Expected an official HTTPS GitHub dependency URL.'
-  [[ "$mode" = 644 || "$mode" = 755 ]] || die 'Invalid dependency mode.'
-  safe_file "$(resolve_target "$relative")"
-done < "$REPO_DIR/dependencies.tsv"
-
-matches_hash() {
-  [[ -f "$1" && ! -L "$1" ]] || return 1
-  local actual
-  actual=$(sha256sum -- "$1")
-  [[ "${actual%% *}" = "$2" ]]
-}
 
 if [[ "$MODE" = dry-run ]]; then
   note "DRY RUN: Fedora $VERSION_ID / $ARCH"
@@ -145,42 +117,25 @@ if [[ "$MODE" = dry-run ]]; then
     note 'All required RPM packages are installed.'
   fi
   python3 -B "$REPO_DIR/scripts/links.py" --dry-run
-  while IFS=$'\t' read -r arch url archive_hash member file_hash relative mode; do
-    [[ -n "$arch" && "$arch" != \#* ]] || continue
-    [[ "$arch" = all || "$arch" = "$ARCH" ]] || continue
-    target=$(resolve_target "$relative")
-    if matches_hash "$target" "$file_hash" && [[ "$mode" != 755 || -x "$target" ]]; then
-      note "Dependency unchanged: $target"
-    else
-      note "Download, verify, copy (backup if present): $target"
-    fi
-  done < "$REPO_DIR/dependencies.tsv"
+  python3 -B "$REPO_DIR/scripts/dependencies.py" plan "$ARCH"
   exit 0
 fi
 
 check_installation() {
-  local failed=0 relative target arch url archive_hash member file_hash mode
+  local failed=0 zsh_config
   if (( ${#MISSING_PACKAGES[@]} )); then
     note "Missing RPM packages: ${MISSING_PACKAGES[*]}"
     failed=1
   fi
   python3 -B "$REPO_DIR/scripts/links.py" --check || failed=1
-  while IFS=$'\t' read -r arch url archive_hash member file_hash relative mode; do
-    [[ -n "$arch" && "$arch" != \#* ]] || continue
-    [[ "$arch" = all || "$arch" = "$ARCH" ]] || continue
-    target=$(resolve_target "$relative")
-    if ! matches_hash "$target" "$file_hash" || { [[ "$mode" = 755 ]] && [[ ! -x "$target" ]]; }; then
-      note "Dependency differs or is missing: $target"
-      failed=1
-    fi
-  done < "$REPO_DIR/dependencies.tsv"
-  if command -v zsh >/dev/null; then
-    zsh -dfn "$(python3 -B "$REPO_DIR/scripts/links.py" --zsh-config)" || failed=1
+  python3 -B "$REPO_DIR/scripts/dependencies.py" check "$ARCH" || failed=1
+  if command -v zsh >/dev/null && zsh_config=$(python3 -B "$REPO_DIR/scripts/links.py" --zsh-config); then
+    zsh -dfn "$zsh_config" || failed=1
   else
     failed=1
   fi
   (( failed == 0 )) || return 1
-  note "CHECK PASSED: Fedora packages, Main links, pinned dependencies and Zsh syntax."
+  note 'CHECK PASSED: Fedora packages, Main links, downloaded files and Zsh syntax.'
 }
 
 if [[ "$MODE" = check ]]; then
@@ -191,7 +146,6 @@ fi
 mkdir -p -- "$STATE_HOME/dotfiles"
 exec 9>> "$STATE_HOME/dotfiles/install.lock"
 flock -n 9 || die 'Another dotfiles installation is running.'
-TEMP_DIR=$(mktemp -d)
 note "[1/4] Installing missing Fedora RPM packages."
 if (( ${#MISSING_PACKAGES[@]} )); then
   command -v sudo >/dev/null || die 'sudo is required to install missing packages.'
@@ -203,82 +157,14 @@ for package in "${PACKAGES[@]}"; do
   package_installed "$package" || die "Package was not installed: $package"
 done
 python3 -B "$REPO_DIR/scripts/links.py" --validate
-zsh -dfn "$(python3 -B "$REPO_DIR/scripts/links.py" --zsh-config)"
+zsh_config=$(python3 -B "$REPO_DIR/scripts/links.py" --zsh-config)
+zsh -dfn "$zsh_config"
 
-write_copy() {
-  local source=$1 target=$2 mode=$3 temporary backup
-  safe_file "$target"
-  if cmp -s -- "$source" "$target" && { [[ "$mode" != 755 ]] || [[ -x "$target" ]]; }; then
-    return 0
-  fi
-  if [[ -e "$target" ]]; then
-    if [[ -z "$BACKUP_DIR" ]]; then
-      mkdir -p -- "$STATE_HOME/dotfiles/backups"
-      BACKUP_DIR=$(mktemp -d "$STATE_HOME/dotfiles/backups/$(date -u +%Y%m%dT%H%M%SZ).XXXXXX")
-    fi
-    backup="$BACKUP_DIR/${target#"$HOME/"}"
-    mkdir -p -- "$(dirname -- "$backup")"
-    cp --preserve=mode,timestamps --no-dereference -- "$target" "$backup"
-  fi
-  mkdir -p -- "$(dirname -- "$target")"
-  temporary=$(mktemp "$(dirname -- "$target")/.dotfiles.XXXXXX")
-  if ! install -m "$mode" -- "$source" "$temporary" || ! mv -fT -- "$temporary" "$target"; then
-    rm -f -- "$temporary"
-    die "Cannot copy $target; backups: ${BACKUP_DIR:-none needed yet}"
-  fi
-  CHANGED=$((CHANGED + 1))
-  note "Copied: $target"
-}
-
-note '[2/4] Preparing pinned dependencies; every download is checked before use.'
-while IFS=$'\t' read -r arch url archive_hash member file_hash relative mode; do
-  [[ -n "$arch" && "$arch" != \#* ]] || continue
-  [[ "$arch" = all || "$arch" = "$ARCH" ]] || continue
-  target=$(resolve_target "$relative")
-  if matches_hash "$target" "$file_hash" && { [[ "$mode" != 755 ]] || [[ -x "$target" ]]; }; then
-    continue
-  fi
-  archive="$TEMP_DIR/$archive_hash"
-  if [[ ! -f "$archive" ]]; then
-    curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' --tlsv1.2 \
-      --connect-timeout 15 --max-time 300 --retry 2 --output "$archive" "$url"
-    matches_hash "$archive" "$archive_hash" || die 'Downloaded dependency checksum mismatch.'
-  fi
-  prepared="$TEMP_DIR/$file_hash.file"
-  if [[ "$member" = - ]]; then
-    cp -- "$archive" "$prepared"
-  else
-    python3 - "$archive" "$member" "$prepared" <<'PY'
-import pathlib
-import sys
-import tarfile
-
-with tarfile.open(sys.argv[1]) as archive:
-    member = archive.getmember(sys.argv[2])
-    if not member.isfile() or member.size > 100 * 1024 * 1024:
-        raise SystemExit('Expected a small regular archive member')
-    # Read one exact member, never extract archive paths or links.
-    pathlib.Path(sys.argv[3]).write_bytes(archive.extractfile(member).read())
-PY
-  fi
-  matches_hash "$prepared" "$file_hash" || die 'Extracted dependency checksum mismatch.'
-done < "$REPO_DIR/dependencies.tsv"
-
-note '[3/4] Copying dependencies and linking Main configs; changed files get backups.'
-while IFS=$'\t' read -r arch url archive_hash member file_hash relative mode; do
-  [[ -n "$arch" && "$arch" != \#* ]] || continue
-  [[ "$arch" = all || "$arch" = "$ARCH" ]] || continue
-  target=$(resolve_target "$relative")
-  if matches_hash "$target" "$file_hash" && { [[ "$mode" != 755 ]] || [[ -x "$target" ]]; }; then
-    continue
-  fi
-  write_copy "$TEMP_DIR/$file_hash.file" "$target" "$mode"
-done < "$REPO_DIR/dependencies.tsv"
+note '[2/4] Fetching and verifying the latest upstream dependencies.'
+python3 -B "$REPO_DIR/scripts/dependencies.py" install "$ARCH"
+note '[3/4] Linking Main configs. Replaced files get backups.'
 python3 -B "$REPO_DIR/scripts/links.py" --apply
-if (( CHANGED > 0 )); then
-  fc-cache "$DATA_HOME/fonts/JetBrainsMonoNerdFont"
-fi
 note '[4/4] Checking the result.'
 check_installation
-note "Complete. Files changed: $CHANGED. Backups: ${BACKUP_DIR:-none needed}."
+note 'Complete.'
 note 'Reopen Konsole and Dolphin to load the settings in Main.'
