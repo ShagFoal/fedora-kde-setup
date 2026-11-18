@@ -173,7 +173,7 @@ readlink "$HOME/.ssh" "$HOME/Projects"
 <summary>Личные приложения</summary>
 
 ```bash
-sudo dnf5 install btop mpv yakuake libreoffice-draw libreoffice-math mediawriter
+sudo dnf5 install btop mpv libreoffice-draw libreoffice-math mediawriter
 flatpak remote-add --system --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 flatpak remote-modify --system --no-filter --enable flathub
 flatpak install --system flathub md.obsidian.Obsidian org.telegram.desktop
