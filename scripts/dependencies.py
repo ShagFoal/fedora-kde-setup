@@ -97,6 +97,31 @@ def archive_files(path, names):
     return files
 
 
+def fetch_autosuggestions(work):
+    git = ["git", "-c", "credential.helper=", "-c", "protocol.allow=never", "-c", "protocol.https.allow=always"]
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    refs = subprocess.check_output(
+        git + ["ls-remote", "--tags", "--refs", "--sort=-version:refname", AUTOSUGGESTION_REPO],
+        env=env, text=True, timeout=60,
+    )
+    tag = re.search(r"\trefs/tags/(v\d+\.\d+\.\d+)$", refs, re.MULTILINE)
+    if tag is None:
+        raise DependencyError("No stable version tag found for zsh-autosuggestions.")
+    release = tag[1]
+    checkout = work / "zsh-autosuggestions"
+    subprocess.run(
+        git + ["clone", "--quiet", "--depth=1", "--no-tags", "--no-checkout",
+               "--branch", release, AUTOSUGGESTION_REPO, str(checkout)],
+        check=True, env=env, timeout=60,
+    )
+    files = {
+        name: subprocess.check_output(["git", "-C", str(checkout), "show", f"HEAD:{name}"])
+        for name in AUTOSUGGESTION_FILES
+    }
+    print(f"zsh-users/zsh-autosuggestions: {release}", flush=True)
+    return files
+
+
 def fetch_latest(work, arch):
     starship_target = "gnu" if arch == "x86_64" else "musl"
     starship = latest_archive(
@@ -109,16 +134,7 @@ def fetch_latest(work, arch):
     files = archive_files(starship, ("starship",))
     files.update(archive_files(patina, ("zsh-patina",)))
     files.update(archive_files(fonts, FONT_FILES))
-
-    checkout = work / "zsh-autosuggestions"
-    subprocess.run([
-        "git", "-c", "credential.helper=", "-c", "protocol.allow=never", "-c", "protocol.https.allow=always",
-        "clone", "--quiet", "--depth=1", "--no-tags", "--no-checkout", AUTOSUGGESTION_REPO, str(checkout),
-    ], check=True, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
-    for name in AUTOSUGGESTION_FILES:
-        files[name] = subprocess.check_output(["git", "-C", str(checkout), "show", f"HEAD:{name}"])
-    revision = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "--short", "HEAD"], text=True)
-    print(f"zsh-users/zsh-autosuggestions: {revision.strip()}", flush=True)
+    files.update(fetch_autosuggestions(work))
     return files
 
 
@@ -155,9 +171,32 @@ def check(home, targets, record):
         raise DependencyError("Dependencies differ or are missing. Run bash install.sh.\n" + "\n".join(mismatches))
 
 
+def verify_launch(files, bin_dir):
+    directory_chain(bin_dir)
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    # Check executables on the same filesystem as the final copies.
+    with tempfile.TemporaryDirectory(prefix=".dotfiles-check-", dir=bin_dir) as temp:
+        work = Path(temp)
+        for name in BINARIES:
+            path = work / name
+            path.write_bytes(files[name])
+            path.chmod(0o700)
+            try:
+                subprocess.run(
+                    [str(path), "--version"], check=True, timeout=10,
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                )
+            except (OSError, subprocess.SubprocessError) as error:
+                raise DependencyError(f"The downloaded {name} cannot run on this system. Installed files were kept.") from error
+        plugin = work / AUTOSUGGESTION_FILES[0]
+        plugin.write_bytes(files[plugin.name])
+        subprocess.run(["zsh", "-dfn", str(plugin)], check=True, timeout=10)
+
+
 def install(home, targets, record, font_dir, arch):
     with tempfile.TemporaryDirectory(prefix="fedora-kde-dependencies-") as temp:
         files = fetch_latest(Path(temp), arch)
+    verify_launch(files, targets[BINARIES[0]][0].parent)
     checksums = {}
     backup = None
     fonts_changed = False
@@ -218,5 +257,5 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (DependencyError, LinkError, OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError, tarfile.TarError) as error:
+    except (DependencyError, LinkError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError, tarfile.TarError) as error:
         sys.exit(f"Dependency setup: {error}")

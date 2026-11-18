@@ -65,15 +65,19 @@ elif name == 'curl':
     else:
         shutil.copyfile(fixtures / url.split('/')[-1], output)
 elif name == 'git':
-    if 'clone' in sys.argv:
+    if 'ls-remote' in sys.argv:
+        assert not os.environ.get('FORBID_DOWNLOAD'), 'Unexpected Git tag lookup'
+        assert '--sort=-version:refname' in sys.argv
+        for tag in ('v11.0.0-rc.1', 'v10.0.0', 'v9.0.0'):
+            print('a' * 40 + '\\trefs/tags/' + tag)
+    elif 'clone' in sys.argv:
         assert not os.environ.get('FORBID_DOWNLOAD'), 'Unexpected Git clone'
+        assert sys.argv[sys.argv.index('--branch') + 1] == 'v10.0.0'
         assert sys.argv[-2] == 'https://github.com/zsh-users/zsh-autosuggestions.git'
         pathlib.Path(sys.argv[-1]).mkdir()
-    elif sys.argv[3] == 'show':
-        sys.stdout.buffer.write((pathlib.Path(os.environ['FIXTURES']) / sys.argv[4].removeprefix('HEAD:')).read_bytes())
     else:
-        assert sys.argv[3:] == ['rev-parse', '--short', 'HEAD']
-        print('abcd123')
+        assert sys.argv[3] == 'show'
+        sys.stdout.buffer.write((pathlib.Path(os.environ['FIXTURES']) / sys.argv[4].removeprefix('HEAD:')).read_bytes())
 elif name not in ('fc-cache', 'zsh'):
     raise SystemExit('Unexpected command: ' + name)
 '''
@@ -332,6 +336,18 @@ class InstallerTests(unittest.TestCase):
         self.run_installer("--check", FORBID_DOWNLOAD="1")
         target.write_bytes(b"corrupted local binary")
         self.run_installer("--check", success=False, FORBID_DOWNLOAD="1")
+
+    def test_incompatible_latest_binary_keeps_existing_installation(self):
+        self.run_installer()
+        before = snapshot(self.home)
+        self.make_archive(self.starship, {"starship": b"#!/bin/sh\n# newer build\nexit 0\n"})
+        self.release("starship/starship", self.starship, "11")
+        self.make_archive(self.patina, {"zsh-patina": b"#!/bin/sh\nexit 126\n"})
+        self.release("michel-kraemer/zsh-patina", self.patina, "11")
+        result = self.run_installer(success=False, FORBID_SUDO="1")
+        self.assertIn("downloaded zsh-patina cannot run", result.stderr)
+        self.assertEqual(snapshot(self.home), before)
+        self.run_installer("--check", FORBID_DOWNLOAD="1", FORBID_SUDO="1")
 
     def test_config_parent_symlink_is_rejected(self):
         outside = self.base / "outside"

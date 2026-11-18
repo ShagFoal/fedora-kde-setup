@@ -592,8 +592,10 @@ python3 -B -m unittest discover -s tests
 установленные в этом запуске ссылки откатываются.
 При каждом обычном запуске установщик получает последние стабильные выпуски
 Starship, zsh-patina и JetBrains Mono Nerd Font и сверяет архивы с SHA‑256 из
-метаданных GitHub. Плагин zsh-autosuggestions берётся из текущего коммита основной
-ветки. Скрипт выводит теги и коммит, затем заменяет только изменившиеся файлы.
+метаданных GitHub. Для zsh-autosuggestions он выбирает последний стабильный тег.
+До замены файлов установщик проверяет запуск скачанных Starship и Patina
+и синтаксис плагина Zsh. Если проверка завершается ошибкой, действующие файлы
+остаются на месте.
 [Starship](https://github.com/starship/starship/releases/latest),
 [zsh-patina](https://github.com/michel-kraemer/zsh-patina/releases/latest),
 [Nerd Fonts](https://github.com/ryanoasis/nerd-fonts/releases/latest),
@@ -623,7 +625,8 @@ python3 -B scripts/restore.py restore.json --configured
 
 ## Настройки Plasma
 
-Открой «Параметры системы». В настройках клавиатуры добавь **English (US)** и
+После установки задай параметры Plasma вручную через «Параметры системы».
+В настройках клавиатуры добавь **English (US)** и
 **Russian**. Назначь переключение на **Caps Lock** и выбери запоминание раскладки
 по приложению. Для повтора клавиш поставь задержку **250 мс** и скорость **20 повторов/с**.
 В разделе «Виртуальные рабочие столы» создай **9 столов** в **3 ряда**. Затем открой
