@@ -116,7 +116,7 @@ modinfo -k "$(uname -r)" -F version nvidia
 
 Дождись сборки и сравни версии пакета и модуля. Если DNF не находит `kernel-devel` для `uname -r`, сначала обнови Fedora и загрузись в последнее установленное ядро. При ошибке сборки смотри `/var/cache/akmods/nvidia/.last.log`. Прежнее ядро можно выбрать в меню GRUB. [Драйвер NVIDIA из RPM Fusion](https://rpmfusion.org/Howto/NVIDIA).
 
-При включённом Secure Boot также проверь подпись командой `modinfo -k "$(uname -r)" -F signer nvidia`. Если модуль собран до регистрации ключа MOK, пересобери его командой `sudo akmods --force --rebuild --kernels "$(uname -r)"` и повтори проверку. Подробнее в `/usr/share/doc/akmods/README.secureboot`.
+При включённом Secure Boot также проверь подпись командой `modinfo -k "$(uname -r)" -F signer nvidia`. Если подписи нет или модуль подписан другим ключом, проверь регистрацию ключа akmods в MOK и пересобери модуль командой `sudo akmods --force --rebuild --kernels "$(uname -r)"` и повтори проверку. Подробнее в `/usr/share/doc/akmods/README.secureboot`.
 
 Перезагрузи ноутбук после успешной проверки. На этом IdeaPad первая команда должна показать RTX 3050 Ti, а вторая обращается напрямую к Intel Iris Xe. В её выводе ожидается драйвер Intel iHD.
 
