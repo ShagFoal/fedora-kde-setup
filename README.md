@@ -5,19 +5,58 @@
 
 ## До переустановки
 
-1. Проверь с другого устройства вход в Google Drive. Сохрани пароль Restic и данные OAuth вне диска, который будешь стирать.
-2. Обнови установщик, сделай свежий снимок и проверь восстановление. Для репетиции нужно место под вторую копию `Main`.
+1. Проверь с другого устройства доступ к Google Drive и сохрани пароль Restic и данные OAuth вне дисков ноутбука.
+2. Сделай свежий снимок командой ниже. Если она уже выполняется, дождись строки `snapshot … saved`.
+
+```bash
+"$HOME/Main/System/Scripts/backup-main"
+```
+
+После завершения снимка обнови установщик и проверь восстановление. Для репетиции нужно место под вторую копию `Main`.
 
 ```bash
 cd "$HOME/Main/System/Setup" &&
   git pull --ff-only &&
-  "$HOME/Main/System/Scripts/backup-main" &&
   bash install.sh --rehearse
 ```
 
-Выбери свежий снимок и дождись `REHEARSAL PASSED`. Открой важный проект из `~/Restored-Main-*/Main`, проверь, что там есть последние правки, и запиши ID снимка. Отдельно сохрани нужные файлы за пределами `Main` и файлы из исключённых каталогов `node_modules`, `__pycache__`, `target`, `.next` и `dist`, если они нужны. На время репетиции и восстановления отложи `restic prune` и `restic forget --prune`. Для запасной копии на SSD смотри [шаг 3](#3-восстановить-main). [Проверка файлов в Restic](https://restic.readthedocs.io/en/stable/050_restore.html).
+Выбери свежий снимок, дождись `REHEARSAL PASSED`, открой важный проект в восстановленной копии и запиши ID снимка. Отдельно сохрани нужные файлы за пределами `Main` и из исключённых каталогов `node_modules`, `__pycache__`, `target`, `.next` и `dist`. На время репетиции и восстановления отложи `restic prune` и `restic forget --prune`. Запасной путь через внешний SSD описан в [шаге 3](#3-восстановить-main). [Проверка файлов в Restic](https://restic.readthedocs.io/en/stable/050_restore.html).
 
-3. Скачай Fedora 45 KDE x86_64, проверь образ через **Verify** и запиши флешку через Fedora Media Writer. В Live KDE проверь Wi-Fi, звук и тачпад. В установщике сверь модель и размер SSD. На этом ноутбуке `/` и `/home` находятся на одном Btrfs-разделе. Удаление раздела стирает оба подтома. [Загрузка Fedora KDE](https://fedoraproject.org/kde/download/).
+## Сначала Windows, затем Fedora
+
+Для раздельной установки ориентируйся на модель и ёмкость. Номера дисков в установщиках могут меняться.
+
+| SSD | Сейчас | Если сохраняешь раздельную схему |
+|---|---|---|
+| Apacer AS2280P4U 256GB, около 238,5 ГиБ | Fedora, `/home` и EFI Fedora | Fedora 45 KDE |
+| UMIS RPJTJ512MGE1QDY, около 476,9 ГиБ | NTFS и Btrfs `ROOT`, около 298 ГиБ | Windows |
+
+**До разметки проверь нужные файлы с обоих SSD.** `backup-main` сохраняет `Main` на Apacer. Удаление всех разделов UMIS сотрёт также `ROOT` и NTFS. Удаление раздела Btrfs на Apacer сотрёт оба подтома Fedora, `/` и `/home`. На время установки отключи внешний SSD с копией.
+
+### Windows
+
+1. При включении несколько раз нажми **F12** и выбери загрузку с флешки Windows в режиме **UEFI**. В установщике сверяй выбранный диск с таблицей. Если весь UMIS отводишь под Windows, освобождай место только на нём и только после проверки копий. [Меню загрузки Lenovo](https://download.lenovo.com/pccbbs/pubs/ip_gaming3_7/html_en/EN/select_boot_devices.html) · [Установка Windows с флешки](https://support.microsoft.com/en-us/windows/deployment/install-upgrade/reinstall-windows-with-the-installation-media).
+2. Загрузи установленную Windows. Открой PowerShell от администратора и сверь номера дисков для раздела Windows (`IsBoot`) и системного EFI (`IsSystem`).
+
+```powershell
+Get-Disk | Format-Table Number, FriendlyName, Size, PartitionStyle
+Get-Partition | Where-Object { $_.IsBoot -or $_.IsSystem } |
+    Format-Table DiskNumber, PartitionNumber, DriveLetter, IsBoot, IsSystem
+```
+
+Переходи к Fedora, когда разделы с `IsBoot` и `IsSystem` находятся на выбранном SSD Windows с GPT. Если `IsSystem` указывает на Apacer, остановись перед его форматированием. Сначала загрузчик Windows должен быть на диске Windows. Если включено шифрование устройства или BitLocker, проверь доступ к ключу восстановления с другого устройства. [Разметка Windows для UEFI](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/configure-uefigpt-based-hard-drive-partitions?view=windows-11) · [Свойства разделов Windows](https://learn.microsoft.com/en-us/windows-hardware/drivers/storage/msft-partition) · [Ключ восстановления BitLocker](https://support.microsoft.com/en-us/windows/security/encryption/find-your-bitlocker-recovery-key).
+
+### Fedora
+
+1. Нажми **Перезагрузка** в Windows и через **F12** выбери флешку Fedora 45 KDE в режиме **UEFI**. Если образ ещё предстоит записать, проверь его через **Verify** и запиши Fedora Media Writer. В Live KDE проверь Wi-Fi, звук и тачпад. [Загрузка Fedora KDE](https://fedoraproject.org/kde/download/).
+2. В Anaconda выбери только SSD Fedora. Для раздельной схемы это Apacer. Если отдаёшь Anaconda весь Apacer, на итоговом экране проверь, что все изменения применяются только к нему, и подтверди установку. [Установщик Anaconda](https://fedoramagazine.org/anaconda-installer-redesign/).
+3. После установки извлеки флешку. Через **F12** проверь загрузку **Fedora** и **Windows Boot Manager**. В Fedora по выводу ниже сверь, что корень и `/boot/efi` находятся на SSD Fedora. Затем переходи к шагу 1.
+
+```bash
+lsblk -d -e 7 -o NAME,MODEL,SIZE,PTTYPE
+findmnt --target / -o SOURCE,FSTYPE
+findmnt --mountpoint /boot/efi -o SOURCE,FSTYPE
+```
 
 ## 1. Обновить Fedora и подключить RPM Fusion
 
